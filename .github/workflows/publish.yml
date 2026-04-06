@@ -1,0 +1,63 @@
+name: Publish to NuGet
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: nuget
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Check if version already published
+        id: check
+        run: |
+          VERSION=$(grep -oP '<Version>\K[^<]+' Odin.Core/Odin.Core.csproj)
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          if curl -sf "https://api.nuget.org/v3-flatcontainer/odin.core/${VERSION}/odin.core.${VERSION}.nupkg" -o /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Restore
+        if: steps.check.outputs.exists == 'false'
+        run: dotnet restore
+
+      - name: Build
+        if: steps.check.outputs.exists == 'false'
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Test (unit tests only — golden tests run in Azure DevOps)
+        if: steps.check.outputs.exists == 'false'
+        run: dotnet test --configuration Release --no-build --filter "FullyQualifiedName!~Golden"
+
+      - name: Pack
+        if: steps.check.outputs.exists == 'false'
+        run: dotnet pack Odin.Core/Odin.Core.csproj --configuration Release --no-build --output ./artifacts
+
+      - name: NuGet login
+        if: steps.check.outputs.exists == 'false'
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          dotnet nuget push ./artifacts/*.nupkg \
+            --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json
+          dotnet nuget push ./artifacts/*.snupkg \
+            --api-key "${{ steps.login.outputs.NUGET_API_KEY }}" \
+            --source https://api.nuget.org/v3/index.json || true
