@@ -8,7 +8,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PackageId>Odin.Core</PackageId>
-    <Version>1.0.3</Version>
+    <Version>1.0.4</Version>
     <Authors>Laird Rixford</Authors>
     <Company>Odin Foundation</Company>
     <Description>ODIN (Open Data Interchange Notation) parser, serializer, validator, and transform engine for .NET. Parse, serialize, validate, diff, patch, and transform ODIN documents with full schema support.</Description>
