@@ -272,22 +272,28 @@ namespace Odin.Core.Transform
                 return;
             }
 
-            // Fallback: standard array section with {---} separators
-            sb.Append('{');
-            sb.Append(name);
-            sb.Append("[]}\n");
+            // Fallback: one absolute record header `{name[i]}` per item.
+            string basePath = parentSection != null
+                ? parentSection + "." + name
+                : name;
             for (int i = 0; i < items.Count; i++)
             {
-                if (i > 0) sb.Append("{---}\n");
-                WriteFieldsSimple(sb, items[i]);
+                sb.Append('{');
+                sb.Append(basePath);
+                sb.Append('[');
+                sb.Append(i.ToString(CultureInfo.InvariantCulture));
+                sb.Append("]}\n");
+                WriteFieldsSimple(sb, items[i], basePath + "[" + i.ToString(CultureInfo.InvariantCulture) + "]");
             }
         }
 
         private static List<string>? GetConsistentColumns(List<DynValue> items)
         {
-            // Collect flattened columns from all items (union of all fields)
+            // Collect the union of columns across items, plus per-item column
+            // sets so we can later reject tabular when indexed sub-arrays are sparse.
             var allColumns = new List<string>();
             var columnSet = new HashSet<string>();
+            var perItemColumnSets = new List<HashSet<string>>(items.Count);
 
             for (int i = 0; i < items.Count; i++)
             {
@@ -298,14 +304,42 @@ namespace Odin.Core.Transform
                 if (!CollectFlatColumns(obj, "", itemCols))
                     return null;
 
+                var itemSet = new HashSet<string>();
                 for (int j = 0; j < itemCols.Count; j++)
                 {
+                    itemSet.Add(itemCols[j]);
                     if (columnSet.Add(itemCols[j]))
                         allColumns.Add(itemCols[j]);
                 }
+                perItemColumnSets.Add(itemSet);
             }
 
-            return allColumns.Count > 0 ? allColumns : null;
+            if (allColumns.Count == 0) return null;
+
+            // Reject tabular if any indexed sub-array column (`key[N]`) is sparse —
+            // padding shorter rows with empty cells loses to the nested record-block form.
+            for (int c = 0; c < allColumns.Count; c++)
+            {
+                string col = allColumns[c];
+                if (col.Length == 0 || col[col.Length - 1] != ']') continue;
+                int openIdx = col.LastIndexOf('[');
+                if (openIdx <= 0) continue;
+                bool allDigits = true;
+                for (int k = openIdx + 1; k < col.Length - 1; k++)
+                {
+                    char ch = col[k];
+                    if (ch < '0' || ch > '9') { allDigits = false; break; }
+                }
+                if (!allDigits) continue;
+
+                for (int r = 0; r < perItemColumnSets.Count; r++)
+                {
+                    if (!perItemColumnSets[r].Contains(col))
+                        return null;
+                }
+            }
+
+            return allColumns;
         }
 
         private static bool CollectFlatColumns(List<KeyValuePair<string, DynValue>> obj, string prefix, List<string> columns)
@@ -326,7 +360,20 @@ namespace Odin.Core.Transform
                 }
                 else if (val.Type == DynValueType.Array)
                 {
-                    return false; // Arrays not supported in tabular columns
+                    // Top-level primitive sub-arrays only; sparsity is checked in GetConsistentColumns.
+                    if (prefix.Length > 0) return false;
+                    var arr = val.AsArray();
+                    if (arr == null) return false;
+                    for (int a = 0; a < arr.Count; a++)
+                    {
+                        var el = arr[a];
+                        if (el.Type == DynValueType.Object || el.Type == DynValueType.Array)
+                            return false;
+                    }
+                    for (int a = 0; a < arr.Count; a++)
+                    {
+                        columns.Add(obj[i].Key + "[" + a.ToString(CultureInfo.InvariantCulture) + "]");
+                    }
                 }
                 else
                 {
@@ -372,6 +419,28 @@ namespace Odin.Core.Transform
 
         private static DynValue? FindField(List<KeyValuePair<string, DynValue>> obj, string key)
         {
+            // Support indexed array access for tabular sub-array columns: `key[N]`.
+            int br = key.IndexOf('[');
+            if (br > 0 && key.Length > 0 && key[key.Length - 1] == ']')
+            {
+                string arrKey = key.Substring(0, br);
+                string idxStr = key.Substring(br + 1, key.Length - br - 2);
+                if (int.TryParse(idxStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int idx))
+                {
+                    for (int i = 0; i < obj.Count; i++)
+                    {
+                        if (obj[i].Key == arrKey && obj[i].Value.Type == DynValueType.Array)
+                        {
+                            var arr = obj[i].Value.AsArray();
+                            if (arr != null && idx >= 0 && idx < arr.Count)
+                                return arr[idx];
+                            return null;
+                        }
+                    }
+                    return null;
+                }
+            }
+
             // Support dotted paths for nested object access
             int dotIdx = key.IndexOf('.');
             if (dotIdx > 0)
@@ -468,17 +537,56 @@ namespace Odin.Core.Transform
             sb.Append('\n');
         }
 
-        private static void WriteFieldsSimple(StringBuilder sb, DynValue value)
+        private static void WriteFieldsSimple(StringBuilder sb, DynValue value, string? currentHeader = null)
         {
             var entries = value.AsObject();
             if (entries == null) return;
 
+            // Pass 1: scalars first so they sit directly under the current header.
             for (int i = 0; i < entries.Count; i++)
             {
+                var v = entries[i].Value;
+                if (v.Type == DynValueType.Object || v.Type == DynValueType.Array) continue;
                 sb.Append(entries[i].Key);
                 sb.Append(" = ");
-                sb.Append(ValueToOdinString(entries[i].Value));
+                sb.Append(ValueToOdinString(v));
                 sb.Append('\n');
+            }
+
+            // Pass 2: nested arrays as primitive sub-blocks or per-index sub-records.
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var v = entries[i].Value;
+                if (v.Type != DynValueType.Array) continue;
+
+                var arr = v.AsArray();
+                if (arr == null) continue;
+
+                WriteArraySectionSmart(sb, entries[i].Key, currentHeader, arr, null);
+            }
+
+            // Pass 3: nested objects as `{.field}` sub-sections.
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var v = entries[i].Value;
+                if (v.Type != DynValueType.Object) continue;
+
+                if (currentHeader != null)
+                {
+                    sb.Append("{.");
+                    sb.Append(entries[i].Key);
+                    sb.Append("}\n");
+                }
+                else
+                {
+                    sb.Append('{');
+                    sb.Append(entries[i].Key);
+                    sb.Append("}\n");
+                }
+                string childHeader = currentHeader != null
+                    ? currentHeader + "." + entries[i].Key
+                    : entries[i].Key;
+                WriteFieldsSimple(sb, v, childHeader);
             }
         }
 
