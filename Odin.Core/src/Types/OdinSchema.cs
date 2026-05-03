@@ -84,6 +84,14 @@ public sealed class SchemaField
     /// <summary>Whether this field is deprecated.</summary>
     public bool Deprecated { get; set; }
 
+    /// <summary>
+    /// Whether this field is immutable — once a value is set, it cannot
+    /// be changed or deleted. The SDK records this flag; enforcement is
+    /// the responsibility of the storage layer (e.g. andvari rejects
+    /// writes that would mutate or delete a prior value).
+    /// </summary>
+    public bool Immutable { get; set; }
+
     /// <summary>Optional description.</summary>
     public string? Description { get; set; }
 

@@ -452,6 +452,7 @@ namespace Odin.Core.Validation
             bool required = false;
             bool confidential = false;
             bool deprecated = false;
+            bool immutable = false;
             var constraints = new List<SchemaConstraint>();
             var conditionals = new List<SchemaConditional>();
             var fieldType = SchemaFieldType.String();
@@ -596,6 +597,7 @@ namespace Odin.Core.Validation
                     }
                     if (after.StartsWith("immutable", StringComparison.Ordinal))
                     {
+                        immutable = true;
                         remaining = after.Substring("immutable".Length).TrimStart();
                         continue;
                     }
@@ -793,6 +795,7 @@ namespace Odin.Core.Validation
                 Required = required,
                 Confidential = confidential,
                 Deprecated = deprecated,
+                Immutable = immutable,
                 Constraints = constraints,
                 Conditionals = conditionals,
             };
