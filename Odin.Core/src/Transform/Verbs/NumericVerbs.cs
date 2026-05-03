@@ -276,6 +276,15 @@ internal static class NumericVerbs
             }
         }
 
+        // 1 numeric arg: random integer in [0, N] inclusive (matches Java/Rust)
+        if (args.Length == 1)
+        {
+            var maxVal = ToDouble(args[0]);
+            if (!maxVal.HasValue) return DynValue.Null();
+            long max = (long)Math.Floor(maxVal.Value);
+            return DynValue.Integer((long)Math.Floor(GetRandom().NextDouble() * (max + 1)));
+        }
+
         // 3 args (min, max, seed_str): seeded integer in [min, max]
         if (args.Length >= 3 && args[2].Type == DynValueType.String)
         {

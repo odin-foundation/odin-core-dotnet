@@ -1149,10 +1149,11 @@ public class NumericVerbExtendedTests
         var result = Invoke("random", I(100));
         var d = result.AsDouble();
         var i = result.AsInt64();
+        // random(N) returns int in [0, N] inclusive — match implementation in NumericVerbs.
         if (d.HasValue)
-            Assert.True(d.Value >= 0.0 && d.Value < 100.0, $"random={d.Value}");
+            Assert.True(d.Value >= 0.0 && d.Value <= 100.0, $"random={d.Value}");
         else if (i.HasValue)
-            Assert.True(i.Value >= 0 && i.Value < 100, $"random={i.Value}");
+            Assert.True(i.Value >= 0 && i.Value <= 100, $"random={i.Value}");
         else
             Assert.Fail("Expected numeric result");
     }
