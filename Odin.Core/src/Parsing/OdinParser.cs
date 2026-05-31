@@ -263,6 +263,17 @@ namespace Odin.Core.Parsing
             state.Advance();
             state.SkipNewlines();
 
+            // Header-inline directive: {segment :type "value"} or {segment :if "expr"}.
+            // Splits the path from the directive and emits a synthetic assignment.
+            string? inlineDirectiveKey = null;
+            string? inlineDirectiveValue = null;
+            if (TryExtractInlineDirective(headerValue, out string pathPart, out string dirName, out string dirValue))
+            {
+                headerValue = pathPart;
+                inlineDirectiveKey = "_" + dirName;
+                inlineDirectiveValue = dirValue;
+            }
+
             if (headerValue == "$")
             {
                 inMetadata = true;
@@ -321,6 +332,52 @@ namespace Odin.Core.Parsing
                 state.CurrentHeader = headerValue;
                 state.PreviousAbsoluteHeader = headerValue;
             }
+
+            // Emit pending inline directive as a synthetic assignment under the header path.
+            if (inlineDirectiveKey != null)
+            {
+                string fullPath = state.CurrentHeader != null
+                    ? state.CurrentHeader + "." + inlineDirectiveKey
+                    : inlineDirectiveKey;
+                assignments.Set(fullPath, new OdinString(inlineDirectiveValue!));
+            }
+        }
+
+        // Detects {segment :type "value"} / {segment :if "expr"} header-inline directives.
+        // Returns the path part and directive name/value; false when not such a directive.
+        private static bool TryExtractInlineDirective(
+            string headerValue, out string pathPart, out string dirName, out string dirValue)
+        {
+            pathPart = headerValue;
+            dirName = string.Empty;
+            dirValue = string.Empty;
+
+            int colonPos = headerValue.IndexOf(':');
+            if (colonPos < 0)
+                return false;
+
+            int i = colonPos + 1;
+            int nameStart = i;
+            while (i < headerValue.Length && (char.IsLetterOrDigit(headerValue[i]) || headerValue[i] == '_'))
+                i++;
+            string name = headerValue.Substring(nameStart, i - nameStart);
+            if (name != "type" && name != "if")
+                return false;
+
+            while (i < headerValue.Length && (headerValue[i] == ' ' || headerValue[i] == '\t'))
+                i++;
+            if (i >= headerValue.Length || headerValue[i] != '"')
+                return false;
+
+            int valueStart = i + 1;
+            int valueEnd = headerValue.LastIndexOf('"');
+            if (valueEnd <= valueStart - 1)
+                return false;
+
+            dirName = name;
+            dirValue = headerValue.Substring(valueStart, valueEnd - valueStart);
+            pathPart = headerValue.Substring(0, colonPos).TrimEnd();
+            return true;
         }
 
         // ─────────────────────────────────────────────────────────────────────

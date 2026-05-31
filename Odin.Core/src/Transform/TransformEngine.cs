@@ -645,8 +645,7 @@ namespace Odin.Core.Transform
             // Check condition
             if (segment.Condition != null)
             {
-                var condVal = ResolvePath(ctx.Source, segment.Condition, ctx.Constants, ctx.Accumulators);
-                if (!IsTruthy(condVal)) return;
+                if (!EvaluateSegmentCondition(segment.Condition, ctx)) return;
             }
 
             // Check discriminator
@@ -2116,6 +2115,110 @@ namespace Odin.Core.Transform
         /// <summary>
         /// Evaluate whether a <see cref="DynValue"/> is truthy.
         /// </summary>
+        // Evaluates a segment condition: "path op value" comparison or a truthy path check.
+        private static bool EvaluateSegmentCondition(string condition, ExecContext ctx)
+        {
+            string trimmed = condition.Trim();
+
+            var m = ConditionPattern.Match(trimmed);
+            if (m.Success)
+            {
+                string pathPart = m.Groups[1].Value;
+                string op = m.Groups[2].Value;
+                string valuePart = m.Groups[3].Value.Trim();
+
+                var left = ResolvePath(ctx.Source, pathPart, ctx.Constants, ctx.Accumulators);
+                var right = ParseConditionValue(valuePart);
+                return CompareConditionValues(left, op, right);
+            }
+
+            var val = ResolvePath(ctx.Source, trimmed, ctx.Constants, ctx.Accumulators);
+            return IsTruthy(val);
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex ConditionPattern =
+            new System.Text.RegularExpressions.Regex(
+                @"^(@?[\w.\[\]]+)\s*(=|==|!=|<>|<=|>=|<|>)\s*(.+)$",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        // Parses the right-hand side of a comparison into a typed value.
+        private static DynValue ParseConditionValue(string raw)
+        {
+            if (raw.Length >= 2 && raw[0] == '\'' && raw[raw.Length - 1] == '\'')
+                return DynValue.String(raw.Substring(1, raw.Length - 2));
+            if (raw.Length >= 2 && raw[0] == '"' && raw[raw.Length - 1] == '"')
+                return DynValue.String(raw.Substring(1, raw.Length - 2));
+
+            string lower = raw.ToLowerInvariant();
+            if (lower == "true") return DynValue.Bool(true);
+            if (lower == "false") return DynValue.Bool(false);
+            if (lower == "null" || lower == "nil") return DynValue.Null();
+
+            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double num))
+            {
+                if (num == Math.Floor(num) && !double.IsInfinity(num))
+                    return DynValue.Integer((long)num);
+                return DynValue.Float(num);
+            }
+
+            return DynValue.String(raw);
+        }
+
+        private static bool CompareConditionValues(DynValue left, string op, DynValue right)
+        {
+            string leftStr = CoerceToString(left);
+            string rightStr = CoerceToString(right);
+
+            var leftNum = ToComparableNumber(left);
+            var rightNum = ToComparableNumber(right);
+            bool numeric = leftNum.HasValue && rightNum.HasValue;
+
+            switch (op)
+            {
+                case "=":
+                case "==":
+                    return leftStr == rightStr;
+                case "!=":
+                case "<>":
+                    return leftStr != rightStr;
+                case "<":
+                    return numeric ? leftNum!.Value < rightNum!.Value
+                                   : string.CompareOrdinal(leftStr, rightStr) < 0;
+                case "<=":
+                    return numeric ? leftNum!.Value <= rightNum!.Value
+                                   : string.CompareOrdinal(leftStr, rightStr) <= 0;
+                case ">":
+                    return numeric ? leftNum!.Value > rightNum!.Value
+                                   : string.CompareOrdinal(leftStr, rightStr) > 0;
+                case ">=":
+                    return numeric ? leftNum!.Value >= rightNum!.Value
+                                   : string.CompareOrdinal(leftStr, rightStr) >= 0;
+                default:
+                    return false;
+            }
+        }
+
+        private static double? ToComparableNumber(DynValue val)
+        {
+            switch (val.Type)
+            {
+                case DynValueType.Integer: return val.AsInt64();
+                case DynValueType.Float:
+                case DynValueType.Currency:
+                case DynValueType.Percent:
+                    return val.AsDouble();
+                case DynValueType.String:
+                {
+                    var s = val.AsString();
+                    if (s != null && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double d))
+                        return d;
+                    return null;
+                }
+                default:
+                    return null;
+            }
+        }
+
         public static bool IsTruthy(DynValue val)
         {
             switch (val.Type)

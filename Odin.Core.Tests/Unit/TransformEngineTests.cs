@@ -2414,4 +2414,64 @@ Name = ""@.name""
         // Custom verbs either pass through or return null
         Assert.True(result.Success || result.Errors.Count > 0);
     }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Header-inline :if conditional segment
+    // ─────────────────────────────────────────────────────────────────
+
+    private const string HeaderInlineIfTransform = @"
+{$}
+odin = ""1.0.0""
+transform = ""1.0.0""
+direction = ""json->json""
+
+{Quote}
+DriverName = ""@driver.name""
+
+{DuiDetails :if ""@driver.has_dui = true""}
+State = ""@driver.dui.state""
+";
+
+    [Fact]
+    public void HeaderInlineIf_IncludesSectionWhenConditionTrue()
+    {
+        var t = Core.Odin.ParseTransform(HeaderInlineIfTransform);
+        var source = Obj(
+            ("driver", Obj(
+                ("name", Str("Pat")),
+                ("has_dui", Bln(true)),
+                ("dui", Obj(("state", Str("TX")))))));
+
+        var result = TransformEngine.Execute(t, source);
+
+        var dui = result.Output!.Get("DuiDetails");
+        Assert.NotNull(dui);
+        Assert.Equal(Str("TX"), dui!.Get("State"));
+    }
+
+    [Fact]
+    public void HeaderInlineIf_OmitsSectionWhenConditionFalse()
+    {
+        var t = Core.Odin.ParseTransform(HeaderInlineIfTransform);
+        var source = Obj(
+            ("driver", Obj(
+                ("name", Str("Sam")),
+                ("has_dui", Bln(false)))));
+
+        var result = TransformEngine.Execute(t, source);
+
+        Assert.NotNull(result.Output!.Get("Quote"));
+        Assert.Null(result.Output!.Get("DuiDetails"));
+    }
+
+    [Fact]
+    public void HeaderInlineIf_EmitsSyntheticConditionAssignment()
+    {
+        var doc = Core.Odin.Parse(@"
+{DuiDetails :if ""@driver.has_dui = true""}
+State = ""@driver.dui.state""
+");
+        Assert.True(doc.Assignments.TryGetValue("DuiDetails._if", out var cond));
+        Assert.Equal("@driver.has_dui = true", Assert.IsType<OdinString>(cond).Value);
+    }
 }
