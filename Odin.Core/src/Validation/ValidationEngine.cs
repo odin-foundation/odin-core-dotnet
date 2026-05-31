@@ -51,8 +51,11 @@ namespace Odin.Core.Validation
             // 0. Expand type composition (merge base type fields into derived types)
             schema = ExpandTypeComposition(schema);
 
+            // 0b. Expand _composition fields and field-level typeRefs into concrete fields.
+            var expandedFields = ExpandFieldComposition(doc, schema, typeRegistry);
+
             // 1. Validate fields defined in schema (skip array element templates)
-            foreach (var kvp in schema.Fields)
+            foreach (var kvp in expandedFields)
             {
                 // Skip array element template fields like "items[].name"
                 if (kvp.Key.Contains("[]."))
@@ -299,6 +302,33 @@ namespace Odin.Core.Validation
             BoundsConstraint bounds,
             List<ValidationError> errors)
         {
+            // Temporal comparison (date/timestamp) — compare chronologically.
+            if (value is OdinDate || value is OdinTimestamp)
+            {
+                var instant = TemporalInstant(value);
+                if (instant.HasValue)
+                {
+                    if (bounds.Min != null && TryParseTemporal(bounds.Min, out var minDt) && instant.Value < minDt)
+                    {
+                        errors.Add(new ValidationError(
+                            ValidationErrorCode.ValueOutOfBounds,
+                            path,
+                            string.Format(CultureInfo.InvariantCulture,
+                                "Date {0} is below minimum {1}", value.ToString(), bounds.Min)));
+                        return;
+                    }
+                    if (bounds.Max != null && TryParseTemporal(bounds.Max, out var maxDt) && instant.Value > maxDt)
+                    {
+                        errors.Add(new ValidationError(
+                            ValidationErrorCode.ValueOutOfBounds,
+                            path,
+                            string.Format(CultureInfo.InvariantCulture,
+                                "Date {0} is above maximum {1}", value.ToString(), bounds.Max)));
+                    }
+                }
+                return;
+            }
+
             // Numeric comparison
             var num = value.AsDouble();
             if (num.HasValue)
@@ -366,6 +396,26 @@ namespace Odin.Core.Validation
                     }
                 }
             }
+        }
+
+        /// <summary>Get the chronological instant of a date/timestamp value.</summary>
+        private static DateTime? TemporalInstant(OdinValue value)
+        {
+            if (value is OdinDate d)
+                return new DateTime(d.Year, d.Month, d.Day, 0, 0, 0, DateTimeKind.Utc);
+            if (value is OdinTimestamp ts)
+                return DateTimeOffset.FromUnixTimeMilliseconds(ts.EpochMs).UtcDateTime;
+            return null;
+        }
+
+        /// <summary>Parse a temporal bound literal (date or ISO timestamp) to a UTC instant.</summary>
+        private static bool TryParseTemporal(string raw, out DateTime result)
+        {
+            return DateTime.TryParse(
+                raw,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out result);
         }
 
         private static void ValidatePattern(
@@ -610,12 +660,42 @@ namespace Odin.Core.Validation
                 ValidateCardinality(doc, path, card, errors);
         }
 
+        private static readonly HashSet<string> InvariantKeywords = new HashSet<string> { "true", "false" };
+
+        /// <summary>
+        /// Determine whether any field operand referenced by the expression is present in the
+        /// document with a null value. Absent fields are not treated as null operands.
+        /// </summary>
+        private static bool HasNullOperand(OdinDocument doc, string path, string expr)
+        {
+            foreach (System.Text.RegularExpressions.Match m in
+                System.Text.RegularExpressions.Regex.Matches(expr, "[A-Za-z_][A-Za-z0-9_.]*"))
+            {
+                var token = m.Value;
+                if (InvariantKeywords.Contains(token)) continue;
+                var fullPath = path.Length == 0 ? token : path + "." + token;
+                var value = doc.Get(fullPath);
+                if (value != null && value.IsNull) return true;
+            }
+            return false;
+        }
+
         private static void ValidateInvariant(
             OdinDocument doc,
             string path,
             string expr,
             List<ValidationError> errors)
         {
+            // Spec: any present-but-null operand makes the invariant evaluate to false.
+            if (HasNullOperand(doc, path, expr))
+            {
+                errors.Add(new ValidationError(
+                    ValidationErrorCode.InvariantViolation,
+                    path,
+                    string.Format(CultureInfo.InvariantCulture, "Invariant '{0}' violated", expr)));
+                return;
+            }
+
             // Expression evaluator: supports field refs, arithmetic, comparisons
             string[] ops = { ">=", "<=", "!=", "==", ">", "<", "=" };
             foreach (var op in ops)
@@ -857,6 +937,128 @@ namespace Odin.Core.Validation
             };
         }
 
+        /// <summary>
+        /// Expand <c>_composition</c> marker fields and field-level <c>@TypeRef</c> fields into
+        /// concrete fields under the parent path. An intersection (<c>@a &amp; @b</c>) is stored as
+        /// an <c>&amp;</c>-joined name; every referenced type's fields are merged. A field typed
+        /// <c>@SomeType</c> enforces that type's fields when the sub-object is present or required.
+        /// </summary>
+        private static Dictionary<string, SchemaField> ExpandFieldComposition(
+            OdinDocument doc,
+            OdinSchemaDefinition schema,
+            TypeRegistry? registry)
+        {
+            var result = new Dictionary<string, SchemaField>();
+
+            // Composition markers: merge every member type's fields under the parent path.
+            foreach (var kvp in schema.Fields)
+            {
+                if (!kvp.Key.EndsWith("._composition", StringComparison.Ordinal)
+                    && kvp.Key != "_composition")
+                    continue;
+                if (kvp.Value.FieldType is not TypeRefFieldType typeRef)
+                    continue;
+
+                var parentPath = kvp.Key.Length > "_composition".Length
+                    ? kvp.Key.Substring(0, kvp.Key.Length - "._composition".Length)
+                    : "";
+                foreach (var memberName in SplitMembers(typeRef.Name))
+                {
+                    var typeDef = LookupType(schema, registry, memberName);
+                    if (typeDef == null) continue;
+                    foreach (var f in typeDef.SchemaFields)
+                    {
+                        if (f.Name == "_composition") continue;
+                        var full = parentPath.Length > 0 ? parentPath + "." + f.Name : f.Name;
+                        result[full] = WithName(f, full);
+                    }
+                }
+            }
+
+            // Explicit fields override composed ones; skip composition markers.
+            foreach (var kvp in schema.Fields)
+            {
+                if (kvp.Key.EndsWith("._composition", StringComparison.Ordinal)
+                    || kvp.Key == "_composition")
+                    continue;
+                result[kvp.Key] = kvp.Value;
+            }
+
+            // Field-level typeRefs: a field typed @SomeType enforces the type's fields under it.
+            foreach (var kvp in new List<KeyValuePair<string, SchemaField>>(result))
+            {
+                string? refName = kvp.Value.FieldType switch
+                {
+                    TypeRefFieldType tr => tr.Name,
+                    ReferenceFieldType r => r.Target,
+                    _ => null,
+                };
+                if (refName == null) continue;
+
+                var members = SplitMembers(refName);
+                var typeDefs = new List<SchemaType>();
+                foreach (var m in members)
+                {
+                    var td = LookupType(schema, registry, m);
+                    if (td != null) typeDefs.Add(td);
+                }
+                if (typeDefs.Count == 0) continue; // runtime reference, not a defined type
+
+                bool present = IsObjectPresent(doc, kvp.Key);
+                if (!present && !kvp.Value.Required) continue;
+
+                foreach (var td in typeDefs)
+                {
+                    foreach (var f in td.SchemaFields)
+                    {
+                        if (f.Name == "_composition") continue;
+                        var full = kvp.Key + "." + f.Name;
+                        if (!result.ContainsKey(full))
+                            result[full] = WithName(f, full);
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static SchemaField WithName(SchemaField f, string name) => new SchemaField
+        {
+            Name = name,
+            FieldType = f.FieldType,
+            Required = f.Required,
+            Confidential = f.Confidential,
+            Deprecated = f.Deprecated,
+            Immutable = f.Immutable,
+            Computed = f.Computed,
+            Nullable = f.Nullable,
+            Description = f.Description,
+            Constraints = f.Constraints,
+            Conditionals = f.Conditionals,
+            DefaultValue = f.DefaultValue,
+            TypedDefault = f.TypedDefault,
+        };
+
+        private static List<string> SplitMembers(string name)
+        {
+            var members = new List<string>();
+            foreach (var part in name.Split('&'))
+            {
+                var p = part.Trim();
+                if (p.Length > 0) members.Add(p);
+            }
+            return members;
+        }
+
+        private static bool IsObjectPresent(OdinDocument doc, string path)
+        {
+            if (doc.Get(path) != null) return true;
+            var prefix = path + ".";
+            foreach (var key in doc.Assignments.Keys)
+                if (key.StartsWith(prefix, StringComparison.Ordinal)) return true;
+            return false;
+        }
+
         // ─────────────────────────────────────────────────────────────────────────
         // Conditional Evaluation
         // ─────────────────────────────────────────────────────────────────────────
@@ -1013,14 +1215,17 @@ namespace Odin.Core.Validation
             {
                 if (fieldKvp.Value.FieldType is TypeRefFieldType typeRef)
                 {
-                    var refName = typeRef.Name;
-                    if (LookupType(schema, registry, refName) == null)
+                    // An intersection typeRef carries multiple &-joined member names.
+                    foreach (var memberName in SplitMembers(typeRef.Name))
                     {
-                        errors.Add(new ValidationError(
-                            ValidationErrorCode.UnresolvedReference,
-                            fieldKvp.Key,
-                            string.Format(CultureInfo.InvariantCulture,
-                                "Unresolved type reference: @{0}", refName)));
+                        if (LookupType(schema, registry, memberName) == null)
+                        {
+                            errors.Add(new ValidationError(
+                                ValidationErrorCode.UnresolvedReference,
+                                fieldKvp.Key,
+                                string.Format(CultureInfo.InvariantCulture,
+                                    "Unresolved type reference: @{0}", memberName)));
+                        }
                     }
                 }
             }

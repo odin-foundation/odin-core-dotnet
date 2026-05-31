@@ -121,6 +121,13 @@ namespace Odin.Core.Validation
                         var key = trimmed.Substring(0, eqPos).Trim();
                         var value = trimmed.Substring(eqPos + 1).Trim();
 
+                        // Type composition: `= @a & @b` (empty key). Store as a _composition field.
+                        if (key.Length == 0 && value.Length > 0 && value[0] == '@')
+                        {
+                            ParseCompositionLine(value);
+                            continue;
+                        }
+
                         // Type-level value definition: `= constraints` (empty key)
                         if (key.Length == 0 && _currentContext == ParserContext.TypeDef)
                         {
@@ -320,6 +327,42 @@ namespace Odin.Core.Validation
                 _currentTypeFields = new List<SchemaField>();
             }
 
+            private void ParseCompositionLine(string value)
+            {
+                var members = new List<string>();
+                foreach (var part in value.Split('&'))
+                {
+                    var p = part.Trim();
+                    if (p.Length > 0 && p[0] == '@')
+                        p = p.Substring(1).Trim();
+                    // Drop a trailing :override or other directive.
+                    int colon = p.IndexOf(':');
+                    if (colon >= 0) p = p.Substring(0, colon).Trim();
+                    if (p.Length > 0)
+                        members.Add(p);
+                }
+                if (members.Count == 0)
+                    return;
+
+                var compField = new SchemaField
+                {
+                    Name = "_composition",
+                    FieldType = SchemaFieldType.TypeRef(string.Join("&", members)),
+                };
+
+                if (_currentContext == ParserContext.TypeDef)
+                {
+                    _currentTypeFields.Add(compField);
+                }
+                else
+                {
+                    var path = _currentSectionPath.Length > 0
+                        ? _currentSectionPath + "._composition"
+                        : "_composition";
+                    _fields[path] = compField;
+                }
+            }
+
             private void ParseObjectConstraint(string line)
             {
                 var path = _currentSectionPath;
@@ -496,9 +539,12 @@ namespace Odin.Core.Validation
             bool confidential = false;
             bool deprecated = false;
             bool immutable = false;
+            bool computed = false;
+            bool nullable = false;
             var constraints = new List<SchemaConstraint>();
             var conditionals = new List<SchemaConditional>();
             var fieldType = SchemaFieldType.String();
+            SchemaDefaultValue? typedDefault = null;
 
             name = name.Trim();
             value = value.Trim();
@@ -510,12 +556,17 @@ namespace Odin.Core.Validation
 
             var rest = value;
 
-            // Check for modifier prefix (! * -)
+            // Check for modifier prefix (! ~ * -)
             while (rest.Length > 0)
             {
                 if (rest[0] == '!')
                 {
                     required = true;
+                    rest = rest.Substring(1).TrimStart();
+                }
+                else if (rest[0] == '~' && rest.Length > 1)
+                {
+                    nullable = true;
                     rest = rest.Substring(1).TrimStart();
                 }
                 else if (rest[0] == '*')
@@ -534,21 +585,47 @@ namespace Odin.Core.Validation
                 }
             }
 
-            // Detect type from prefix
+            // Detect type from prefix (the type token plus any glued :directive suffix)
+            string defaultRaw = ""; // bare numeric default trailing a numeric prefix (e.g. ##3)
             if (rest.StartsWith("##", StringComparison.Ordinal))
             {
                 fieldType = SchemaFieldType.Integer();
-                rest = rest.Substring(2).TrimStart();
+                rest = rest.Substring(2);
+                defaultRaw = TakeNumericDefault(ref rest);
+                rest = rest.TrimStart();
+                if (defaultRaw.Length > 0 &&
+                    double.TryParse(defaultRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out var iv))
+                    typedDefault = SchemaDefaultValue.Numeric("integer", iv);
+            }
+            else if (rest.StartsWith("#%", StringComparison.Ordinal))
+            {
+                fieldType = SchemaFieldType.Percent();
+                rest = rest.Substring(2);
+                defaultRaw = TakeNumericDefault(ref rest);
+                rest = rest.TrimStart();
+                if (defaultRaw.Length > 0 &&
+                    double.TryParse(defaultRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out var pv))
+                    typedDefault = SchemaDefaultValue.Numeric("percent", pv);
             }
             else if (rest.StartsWith("#$", StringComparison.Ordinal))
             {
                 fieldType = SchemaFieldType.Currency();
-                rest = rest.Substring(2).TrimStart();
+                rest = rest.Substring(2);
+                defaultRaw = TakeNumericDefault(ref rest);
+                rest = rest.TrimStart();
+                if (defaultRaw.Length > 0 &&
+                    double.TryParse(defaultRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out var cv))
+                    typedDefault = SchemaDefaultValue.Numeric("currency", cv);
             }
             else if (rest.Length > 0 && rest[0] == '#' && !rest.StartsWith("#(", StringComparison.Ordinal))
             {
                 fieldType = SchemaFieldType.Number();
-                rest = rest.Substring(1).TrimStart();
+                rest = rest.Substring(1);
+                defaultRaw = TakeNumericDefault(ref rest);
+                rest = rest.TrimStart();
+                if (defaultRaw.Length > 0 &&
+                    double.TryParse(defaultRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out var nv))
+                    typedDefault = SchemaDefaultValue.Numeric("number", nv);
             }
             else if (rest.Length > 0 && rest[0] == '?')
             {
@@ -560,6 +637,47 @@ namespace Odin.Core.Validation
                 fieldType = SchemaFieldType.Null();
                 rest = "";
             }
+
+            // Temporal type word, possibly with glued :directive suffix (e.g. timestamp:immutable).
+            if (fieldType is StringFieldType && rest.Length > 0 && char.IsLetter(rest[0]))
+            {
+                int wEnd = 0;
+                while (wEnd < rest.Length && char.IsLetter(rest[wEnd])) wEnd++;
+                var word = rest.Substring(0, wEnd);
+                var named = NamedType(word);
+                // Only consume when the word is a standalone token or carries a glued :directive,
+                // not when it is followed by a union pipe (handled by ApplyUnion).
+                bool gluedDirective = wEnd < rest.Length && rest[wEnd] == ':';
+                bool standalone = wEnd >= rest.Length || char.IsWhiteSpace(rest[wEnd]) || gluedDirective;
+                if (named != null && standalone)
+                {
+                    fieldType = named;
+                    rest = rest.Substring(wEnd);
+                    // Apply glued :immutable/:computed directives.
+                    while (rest.Length > 0 && rest[0] == ':')
+                    {
+                        var after = rest.Substring(1);
+                        if (after.StartsWith("immutable", StringComparison.Ordinal))
+                        {
+                            immutable = true;
+                            rest = after.Substring("immutable".Length);
+                        }
+                        else if (after.StartsWith("computed", StringComparison.Ordinal))
+                        {
+                            computed = true;
+                            rest = after.Substring("computed".Length);
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                    rest = rest.TrimStart();
+                }
+            }
+
+            // Union type: a trailing |member chain (e.g. #|~, date|timestamp).
+            fieldType = ApplyUnion(fieldType, ref rest);
 
             // Check for @TypeRef
             if (rest.Length > 0 && rest[0] == '@')
@@ -635,6 +753,7 @@ namespace Odin.Core.Validation
                     }
                     if (after.StartsWith("computed", StringComparison.Ordinal))
                     {
+                        computed = true;
                         remaining = after.Substring("computed".Length).TrimStart();
                         continue;
                     }
@@ -738,10 +857,11 @@ namespace Odin.Core.Validation
                             var inner = after.Substring(1, parenEnd - 1);
                             if (inner.Contains(".."))
                             {
-                                ParseRange(inner, out var rangeMin, out var rangeMax);
-                                constraints.Add(SchemaConstraint.Bounds(
-                                    rangeMin?.ToString(CultureInfo.InvariantCulture),
-                                    rangeMax?.ToString(CultureInfo.InvariantCulture)));
+                                constraints.Add(ParseBoundsConstraint(inner));
+                                remaining = after.Substring(parenEnd + 1).TrimStart();
+                                // A typed default may trail the bounds (e.g. (1..5) ##3).
+                                typedDefault ??= TakeTrailingDefault(fieldType, ref remaining);
+                                continue;
                             }
                             else if (inner.IndexOf(',') >= 0)
                             {
@@ -790,10 +910,10 @@ namespace Odin.Core.Validation
                         var inner = remaining.Substring(1, parenEnd - 1);
                         if (inner.Contains(".."))
                         {
-                            ParseRange(inner, out var rangeMin, out var rangeMax);
-                            constraints.Add(SchemaConstraint.Bounds(
-                                rangeMin?.ToString(CultureInfo.InvariantCulture),
-                                rangeMax?.ToString(CultureInfo.InvariantCulture)));
+                            constraints.Add(ParseBoundsConstraint(inner));
+                            remaining = remaining.Substring(parenEnd + 1).TrimStart();
+                            typedDefault ??= TakeTrailingDefault(fieldType, ref remaining);
+                            continue;
                         }
                         else if (inner.IndexOf(',') >= 0)
                         {
@@ -839,10 +959,165 @@ namespace Odin.Core.Validation
                 Confidential = confidential,
                 Deprecated = deprecated,
                 Immutable = immutable,
+                Computed = computed,
+                Nullable = nullable,
+                TypedDefault = typedDefault,
                 Constraints = constraints,
                 Conditionals = conditionals,
             };
         }
+
+        /// <summary>
+        /// Consume a leading bare numeric literal (the default trailing a numeric prefix,
+        /// e.g. the "3" in "##3"), returning it and advancing <paramref name="rest"/>.
+        /// </summary>
+        private static string TakeNumericDefault(ref string rest)
+        {
+            int i = 0;
+            while (i < rest.Length && (char.IsDigit(rest[i]) || rest[i] == '.' || rest[i] == '-' || rest[i] == '+'))
+                i++;
+            // Require at least one digit to count as a default; a leading ':' or '|' is not one.
+            bool hasDigit = false;
+            for (int j = 0; j < i; j++)
+                if (char.IsDigit(rest[j])) { hasDigit = true; break; }
+            if (!hasDigit) return "";
+            var taken = rest.Substring(0, i);
+            rest = rest.Substring(i);
+            return taken;
+        }
+
+        /// <summary>
+        /// Parse a trailing union chain. For a leading bare temporal word (date|timestamp)
+        /// the first member is read from <paramref name="rest"/>; otherwise the prefix-parsed
+        /// <paramref name="baseType"/> is the first member. Returns a union when |members follow.
+        /// </summary>
+        private static SchemaFieldType ApplyUnion(SchemaFieldType baseType, ref string rest)
+        {
+            var members = new List<SchemaFieldType>();
+            var work = rest.TrimStart();
+
+            // Leading bare temporal word as the first union member (no type prefix matched).
+            if (baseType is StringFieldType)
+            {
+                int pipe = work.IndexOf('|');
+                if (pipe > 0)
+                {
+                    var first = NamedType(work.Substring(0, pipe).Trim());
+                    if (first != null)
+                    {
+                        members.Add(first);
+                        work = work.Substring(pipe); // keep leading | for the member loop
+                    }
+                }
+            }
+
+            if (members.Count == 0)
+            {
+                if (work.Length == 0 || work[0] != '|')
+                    return baseType; // no union
+                members.Add(baseType);
+            }
+
+            // Consume |member tokens.
+            while (work.Length > 0 && work[0] == '|')
+            {
+                work = work.Substring(1);
+                SchemaFieldType? member;
+                if (work.StartsWith("##", StringComparison.Ordinal)) { member = SchemaFieldType.Integer(); work = work.Substring(2); }
+                else if (work.StartsWith("#%", StringComparison.Ordinal)) { member = SchemaFieldType.Percent(); work = work.Substring(2); }
+                else if (work.StartsWith("#$", StringComparison.Ordinal)) { member = SchemaFieldType.Currency(); work = work.Substring(2); }
+                else if (work.StartsWith("~", StringComparison.Ordinal)) { member = SchemaFieldType.Null(); work = work.Substring(1); }
+                else if (work.StartsWith("?", StringComparison.Ordinal)) { member = SchemaFieldType.Boolean(); work = work.Substring(1); }
+                else if (work.StartsWith("\"\"", StringComparison.Ordinal)) { member = SchemaFieldType.String(); work = work.Substring(2); }
+                else if (work.StartsWith("#", StringComparison.Ordinal)) { member = SchemaFieldType.Number(); work = work.Substring(1); }
+                else
+                {
+                    int end = 0;
+                    while (end < work.Length && char.IsLetter(work[end])) end++;
+                    member = NamedType(work.Substring(0, end));
+                    if (member != null) work = work.Substring(end);
+                }
+                if (member == null) break;
+                members.Add(member);
+            }
+
+            rest = work;
+            return members.Count > 1 ? SchemaFieldType.Union(members) : baseType;
+        }
+
+        /// <summary>Map a bare type-name word to its <see cref="SchemaFieldType"/>, if recognized.</summary>
+        private static SchemaFieldType? NamedType(string word) => word switch
+        {
+            "date" => SchemaFieldType.Date(),
+            "timestamp" => SchemaFieldType.Timestamp(),
+            "time" => SchemaFieldType.Time(),
+            "duration" => SchemaFieldType.Duration(),
+            _ => null,
+        };
+
+        /// <summary>
+        /// Parse a bounds constraint from a "min..max" body, preserving temporal and
+        /// decimal literals as strings (compared chronologically/numerically downstream).
+        /// </summary>
+        private static SchemaConstraint ParseBoundsConstraint(string inner)
+        {
+            int dotDot = inner.IndexOf("..", StringComparison.Ordinal);
+            string? min = null, max = null;
+            if (dotDot >= 0)
+            {
+                var left = inner.Substring(0, dotDot).Trim();
+                var right = inner.Substring(dotDot + 2).Trim();
+                if (left.Length > 0) min = left;
+                if (right.Length > 0) max = right;
+            }
+            return SchemaConstraint.Bounds(min, max);
+        }
+
+        /// <summary>
+        /// Consume a typed default trailing a bounds constraint (e.g. the "##3" in "(1..5) ##3"),
+        /// tagging it to match the field's declared type. Advances <paramref name="remaining"/>.
+        /// </summary>
+        private static SchemaDefaultValue? TakeTrailingDefault(SchemaFieldType fieldType, ref string remaining)
+        {
+            var s = remaining.TrimStart();
+            if (s.Length == 0) return null;
+
+            string typeTag;
+            string body;
+            if (s.StartsWith("##", StringComparison.Ordinal)) { typeTag = "integer"; body = s.Substring(2); }
+            else if (s.StartsWith("#%", StringComparison.Ordinal)) { typeTag = "percent"; body = s.Substring(2); }
+            else if (s.StartsWith("#$", StringComparison.Ordinal)) { typeTag = "currency"; body = s.Substring(2); }
+            else if (s.StartsWith("#", StringComparison.Ordinal)) { typeTag = "number"; body = s.Substring(1); }
+            else if (s.StartsWith("?", StringComparison.Ordinal))
+            {
+                var rest2 = s.Substring(1);
+                int e2 = 0; while (e2 < rest2.Length && char.IsLetter(rest2[e2])) e2++;
+                var word = rest2.Substring(0, e2);
+                remaining = rest2.Substring(e2).TrimStart();
+                return SchemaDefaultValue.Boolean(word == "true");
+            }
+            else { body = s; typeTag = DefaultTypeTag(fieldType); }
+
+            int i = 0;
+            while (i < body.Length && (char.IsDigit(body[i]) || body[i] == '.' || body[i] == '-' || body[i] == '+')) i++;
+            var numStr = body.Substring(0, i);
+            if (numStr.Length > 0 &&
+                double.TryParse(numStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var n))
+            {
+                remaining = body.Substring(i).TrimStart();
+                return SchemaDefaultValue.Numeric(typeTag, n);
+            }
+            return null;
+        }
+
+        /// <summary>Map a field type to its default-value type tag.</summary>
+        private static string DefaultTypeTag(SchemaFieldType t) => t switch
+        {
+            IntegerFieldType => "integer",
+            CurrencyFieldType => "currency",
+            PercentFieldType => "percent",
+            _ => "number",
+        };
 
         private static void ParseRange(string s, out int? min, out int? max)
         {

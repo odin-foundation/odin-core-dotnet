@@ -95,14 +95,57 @@ public sealed class SchemaField
     /// <summary>Optional description.</summary>
     public string? Description { get; set; }
 
+    /// <summary>Whether this field accepts a null value.</summary>
+    public bool Nullable { get; set; }
+
+    /// <summary>Whether this field is computed.</summary>
+    public bool Computed { get; set; }
+
     /// <summary>Validation constraints.</summary>
     public List<SchemaConstraint> Constraints { get; set; } = new();
 
     /// <summary>Default value if not provided.</summary>
     public string? DefaultValue { get; set; }
 
+    /// <summary>Typed default value if not provided.</summary>
+    public SchemaDefaultValue? TypedDefault { get; set; }
+
     /// <summary>Conditional requirements.</summary>
     public List<SchemaConditional> Conditionals { get; set; } = new();
+}
+
+/// <summary>A typed default value captured from a schema field definition.</summary>
+public sealed class SchemaDefaultValue
+{
+    /// <summary>The value's type kind (integer, number, currency, percent, boolean, string).</summary>
+    public string Type { get; }
+
+    /// <summary>The numeric payload, if numeric.</summary>
+    public double? Number { get; }
+
+    /// <summary>The boolean payload, if boolean.</summary>
+    public bool? Bool { get; }
+
+    /// <summary>The string payload, if string.</summary>
+    public string? Text { get; }
+
+    private SchemaDefaultValue(string type, double? number, bool? boolean, string? text)
+    {
+        Type = type;
+        Number = number;
+        Bool = boolean;
+        Text = text;
+    }
+
+    /// <summary>Creates a numeric default value tagged with the given type kind.</summary>
+    public static SchemaDefaultValue Numeric(string type, double value) =>
+        new(type, value, null, null);
+
+    /// <summary>Creates a boolean default value.</summary>
+    public static SchemaDefaultValue Boolean(bool value) => new("boolean", null, value, null);
+
+    /// <summary>Creates a string default value.</summary>
+    public static SchemaDefaultValue String(string value) => new("string", null, null, value);
 }
 
 /// <summary>A conditional requirement on a field.</summary>

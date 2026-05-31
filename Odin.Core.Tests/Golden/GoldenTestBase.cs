@@ -80,6 +80,10 @@ public class TestCase
     [JsonPropertyName("structural")]
     public bool Structural { get; set; }
 
+    /// <summary>Value-level assertions on parsed fields/types (constraint values, unions, defaults).</summary>
+    [JsonPropertyName("assert")]
+    public JsonElement? Assert { get; set; }
+
     [JsonPropertyName("expectError")]
     public ExpectError? ExpectError { get; set; }
 
