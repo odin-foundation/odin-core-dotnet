@@ -1083,4 +1083,90 @@ public class DateTimeVerbTests
     {
         Assert.True(Invoke("ageFromDate", Null()).IsNull);
     }
+
+    // =========================================================================
+    // nextBusinessDay
+    // =========================================================================
+
+    [Fact]
+    public void NextBusinessDay_Wednesday_ReturnsThursday()
+    {
+        Assert.Equal("2024-01-18", Invoke("nextBusinessDay", D("2024-01-17")).AsString());
+    }
+
+    [Fact]
+    public void NextBusinessDay_Friday_ReturnsMonday()
+    {
+        Assert.Equal("2024-01-22", Invoke("nextBusinessDay", D("2024-01-19")).AsString());
+    }
+
+    [Fact]
+    public void NextBusinessDay_Saturday_ReturnsMonday()
+    {
+        Assert.Equal("2024-01-22", Invoke("nextBusinessDay", D("2024-01-20")).AsString());
+    }
+
+    [Fact]
+    public void NextBusinessDay_Sunday_ReturnsMonday()
+    {
+        Assert.Equal("2024-01-22", Invoke("nextBusinessDay", D("2024-01-21")).AsString());
+    }
+
+    [Fact]
+    public void NextBusinessDay_NullInput()
+    {
+        Assert.True(Invoke("nextBusinessDay", Null()).IsNull);
+    }
+
+    // =========================================================================
+    // formatDuration
+    // =========================================================================
+
+    [Fact]
+    public void FormatDuration_Seconds()
+    {
+        Assert.Equal("1 day, 1 hour, 1 minute, 1 second", Invoke("formatDuration", I(90061)).AsString());
+    }
+
+    [Fact]
+    public void FormatDuration_SubDaySeconds()
+    {
+        Assert.Equal("1 hour, 1 minute, 1 second", Invoke("formatDuration", I(3661)).AsString());
+    }
+
+    [Fact]
+    public void FormatDuration_SecondsAsString()
+    {
+        Assert.Equal("1 day, 1 hour, 1 minute, 1 second", Invoke("formatDuration", S("90061")).AsString());
+    }
+
+    [Fact]
+    public void FormatDuration_Iso()
+    {
+        Assert.Equal("2 hours, 30 minutes", Invoke("formatDuration", S("PT2H30M")).AsString());
+    }
+
+    [Fact]
+    public void FormatDuration_IsoDay()
+    {
+        Assert.Equal("1 day, 6 hours", Invoke("formatDuration", S("P1DT6H")).AsString());
+    }
+
+    [Fact]
+    public void FormatDuration_ZeroSeconds()
+    {
+        Assert.Equal("0 seconds", Invoke("formatDuration", I(0)).AsString());
+    }
+
+    [Fact]
+    public void FormatDuration_NegativeSeconds_ReturnsNull()
+    {
+        Assert.True(Invoke("formatDuration", I(-5)).IsNull);
+    }
+
+    [Fact]
+    public void FormatDuration_InvalidString_ReturnsNull()
+    {
+        Assert.True(Invoke("formatDuration", S("not-a-duration")).IsNull);
+    }
 }

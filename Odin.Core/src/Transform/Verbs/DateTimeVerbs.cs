@@ -816,12 +816,10 @@ internal static class DateTimeVerbs
         if (!dt.HasValue) return DynValue.Null();
 
         var date = dt.Value.Date;
-        var dow = date.DayOfWeek;
-
-        if (dow == System.DayOfWeek.Saturday)
-            date = date.AddDays(2);
-        else if (dow == System.DayOfWeek.Sunday)
+        do
+        {
             date = date.AddDays(1);
+        } while (date.DayOfWeek == System.DayOfWeek.Saturday || date.DayOfWeek == System.DayOfWeek.Sunday);
 
         return DynValue.String(FormatAsDate(date));
     }
@@ -831,22 +829,75 @@ internal static class DateTimeVerbs
             @"^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$",
             System.Text.RegularExpressions.RegexOptions.Compiled);
 
+    private static readonly System.Text.RegularExpressions.Regex NumericPattern =
+        new System.Text.RegularExpressions.Regex(
+            @"^\d+(?:\.\d+)?$",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>True for numeric DynValue types (integer, float, currency, percent).</summary>
+    private static bool IsNumeric(DynValue v)
+    {
+        switch (v.Type)
+        {
+            case DynValueType.Integer:
+            case DynValueType.Float:
+            case DynValueType.FloatRaw:
+            case DynValueType.Currency:
+            case DynValueType.CurrencyRaw:
+            case DynValueType.Percent:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     private static DynValue FormatDuration(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 1) return DynValue.Null();
 
-        var input = args[0].AsString();
-        if (string.IsNullOrEmpty(input)) return DynValue.Null();
+        int years = 0, months = 0, days = 0, hours = 0, minutes = 0;
+        double seconds = 0.0;
 
-        var match = DurationPattern.Match(input);
-        if (!match.Success) return DynValue.Null();
+        if (IsNumeric(args[0]))
+        {
+            // Numeric seconds: expand into days/hours/minutes/seconds
+            var total = args[0].AsDouble();
+            if (!total.HasValue || double.IsNaN(total.Value) || double.IsInfinity(total.Value) || total.Value < 0)
+                return DynValue.Null();
+            double remain = total.Value;
+            days = (int)Math.Floor(remain / 86400); remain -= days * 86400.0;
+            hours = (int)Math.Floor(remain / 3600); remain -= hours * 3600.0;
+            minutes = (int)Math.Floor(remain / 60); remain -= minutes * 60.0;
+            seconds = remain;
+        }
+        else
+        {
+            var input = args[0].AsString();
+            if (string.IsNullOrEmpty(input)) return DynValue.Null();
 
-        int years = match.Groups[1].Success ? int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
-        int months = match.Groups[2].Success ? int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) : 0;
-        int days = match.Groups[3].Success ? int.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture) : 0;
-        int hours = match.Groups[4].Success ? int.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture) : 0;
-        int minutes = match.Groups[5].Success ? int.Parse(match.Groups[5].Value, CultureInfo.InvariantCulture) : 0;
-        double seconds = match.Groups[6].Success ? double.Parse(match.Groups[6].Value, CultureInfo.InvariantCulture) : 0.0;
+            // Numeric seconds passed as a string
+            if (NumericPattern.IsMatch(input))
+            {
+                double remain = double.Parse(input, NumberStyles.Float, CultureInfo.InvariantCulture);
+                if (remain < 0) return DynValue.Null();
+                days = (int)Math.Floor(remain / 86400); remain -= days * 86400.0;
+                hours = (int)Math.Floor(remain / 3600); remain -= hours * 3600.0;
+                minutes = (int)Math.Floor(remain / 60); remain -= minutes * 60.0;
+                seconds = remain;
+            }
+            else
+            {
+                var match = DurationPattern.Match(input);
+                if (!match.Success) return DynValue.Null();
+
+                years = match.Groups[1].Success ? int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) : 0;
+                months = match.Groups[2].Success ? int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) : 0;
+                days = match.Groups[3].Success ? int.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture) : 0;
+                hours = match.Groups[4].Success ? int.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture) : 0;
+                minutes = match.Groups[5].Success ? int.Parse(match.Groups[5].Value, CultureInfo.InvariantCulture) : 0;
+                seconds = match.Groups[6].Success ? double.Parse(match.Groups[6].Value, CultureInfo.InvariantCulture) : 0.0;
+            }
+        }
 
         var parts = new List<string>();
         if (years > 0) parts.Add($"{years} {(years == 1 ? "year" : "years")}");
