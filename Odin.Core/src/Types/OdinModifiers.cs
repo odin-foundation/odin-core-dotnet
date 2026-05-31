@@ -23,8 +23,11 @@ public sealed class OdinModifiers
     /// <summary>XML namespace prefix for the output element (:ns &lt;prefix&gt; modifier).</summary>
     public string? Ns { get; init; }
 
+    /// <summary>Wrap the XML element text in a CDATA section (:cdata modifier).</summary>
+    public bool Cdata { get; init; }
+
     /// <summary>Returns true if no modifiers are set.</summary>
-    public bool IsEmpty => !Required && !Confidential && !Deprecated && !Attr && Ns == null;
+    public bool IsEmpty => !Required && !Confidential && !Deprecated && !Attr && Ns == null && !Cdata;
 
     /// <summary>Returns true if any modifier is set.</summary>
     public bool HasAny => !IsEmpty;
@@ -39,9 +42,10 @@ public sealed class OdinModifiers
         Confidential == other.Confidential &&
         Deprecated == other.Deprecated &&
         Attr == other.Attr &&
-        Ns == other.Ns;
+        Ns == other.Ns &&
+        Cdata == other.Cdata;
 
     /// <inheritdoc/>
     public override int GetHashCode() =>
-        HashCode.Combine(Required, Confidential, Deprecated, Attr, Ns);
+        HashCode.Combine(Required, Confidential, Deprecated, Attr, Ns, Cdata);
 }

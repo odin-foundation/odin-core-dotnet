@@ -96,6 +96,8 @@ public enum TransformErrorCode
     IncompatibleConversion,
     /// <summary>T012: Dangling branch — conditional branch (elif/else) with no preceding if.</summary>
     DanglingBranch,
+    /// <summary>T013: Validation failed — field value failed a :validate / :enum / :range constraint.</summary>
+    ValidationFailed,
 }
 
 /// <summary>Extension methods for error codes.</summary>
@@ -236,6 +238,7 @@ public static class ErrorCodeExtensions
         TransformErrorCode.PositionOverflow => "T010",
         TransformErrorCode.IncompatibleConversion => "T011",
         TransformErrorCode.DanglingBranch => "T012",
+        TransformErrorCode.ValidationFailed => "T013",
         _ => "T000",
     };
 
@@ -254,6 +257,7 @@ public static class ErrorCodeExtensions
         TransformErrorCode.PositionOverflow => "Position overflow",
         TransformErrorCode.IncompatibleConversion => "Incompatible conversion",
         TransformErrorCode.DanglingBranch => "Dangling conditional branch",
+        TransformErrorCode.ValidationFailed => "Validation failed",
         _ => "Unknown error",
     };
 
@@ -272,6 +276,7 @@ public static class ErrorCodeExtensions
         "T010" => TransformErrorCode.PositionOverflow,
         "T011" => TransformErrorCode.IncompatibleConversion,
         "T012" => TransformErrorCode.DanglingBranch,
+        "T013" => TransformErrorCode.ValidationFailed,
         _ => null,
     };
 }

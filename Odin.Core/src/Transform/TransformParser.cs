@@ -464,7 +464,7 @@ namespace Odin.Core.Transform
             OdinModifiers? modifiers,
             List<OdinDirective> directives)
         {
-            bool hasConf = false, hasReq = false, hasDep = false, hasAttr = false;
+            bool hasConf = false, hasReq = false, hasDep = false, hasAttr = false, hasCdata = false;
             string? nsPrefix = null;
             for (int i = 0; i < directives.Count; i++)
             {
@@ -474,17 +474,19 @@ namespace Odin.Core.Transform
                     case "required": hasReq = true; break;
                     case "deprecated": hasDep = true; break;
                     case "attr": hasAttr = true; break;
+                    case "cdata": hasCdata = true; break;
                     case "ns": nsPrefix = directives[i].Value?.AsString(); break;
                 }
             }
 
-            if (!hasConf && !hasReq && !hasDep && !hasAttr && nsPrefix == null)
+            if (!hasConf && !hasReq && !hasDep && !hasAttr && !hasCdata && nsPrefix == null)
                 return modifiers;
 
             bool mReq = modifiers?.Required ?? false;
             bool mConf = modifiers?.Confidential ?? false;
             bool mDep = modifiers?.Deprecated ?? false;
             bool mAttr = modifiers?.Attr ?? false;
+            bool mCdata = modifiers?.Cdata ?? false;
             string? mNs = modifiers?.Ns;
 
             return new OdinModifiers
@@ -493,6 +495,7 @@ namespace Odin.Core.Transform
                 Confidential = mConf || hasConf,
                 Deprecated = mDep || hasDep,
                 Attr = mAttr || hasAttr,
+                Cdata = mCdata || hasCdata,
                 Ns = nsPrefix ?? mNs,
             };
         }
@@ -569,6 +572,7 @@ namespace Odin.Core.Transform
             List<(string Field, OdinValue Value, OdinModifiers? Modifiers)> fields)
         {
             string? sourcePath = null;
+            string? counter = null;
             Discriminator? discriminator = null;
             int? pass = null;
             string? condition = null;
@@ -609,6 +613,9 @@ namespace Odin.Core.Transform
                         case "_loop":
                         case "_from":
                             sourcePath = OdinValueToString(value);
+                            break;
+                        case "_counter":
+                            counter = OdinValueToString(value);
                             break;
                         case "_pass":
                             if (value.AsInt64().HasValue)
@@ -708,6 +715,7 @@ namespace Odin.Core.Transform
                 Name = name,
                 Path = name,
                 SourcePath = sourcePath,
+                Counter = counter,
                 SegmentDiscriminator = discriminator,
                 IsArray = isArray,
                 Mappings = orderedMappings,
@@ -1178,7 +1186,9 @@ namespace Odin.Core.Transform
                 case "decimals": case "currencyCode":
                 case "leftPad": case "rightPad": case "truncate": case "default":
                 case "upper": case "lower":
-                case "required": case "confidential": case "deprecated": case "attr": case "ns":
+                case "required": case "confidential": case "deprecated": case "attr": case "ns": case "cdata":
+                case "raw": case "array":
+                case "if": case "unless": case "object": case "enum": case "range": case "validate":
                     recognized = true;
                     break;
                 default:
@@ -1189,6 +1199,28 @@ namespace Odin.Core.Transform
             if (!recognized) return (null, 0);
 
             int consumed = nameEnd;
+
+            // Greedy directives: the operand may contain spaces/operators/braces and
+            // runs from after the name to the next ` :word` boundary.
+            switch (name)
+            {
+                case "if": case "unless": case "object": case "enum": case "range": case "validate":
+                {
+                    while (consumed < s.Length && char.IsWhiteSpace(s[consumed])) consumed++;
+                    if (consumed < s.Length && s[consumed] == '"')
+                    {
+                        var (qstr, qconsumed) = ParseQuotedStringArg(s.Substring(consumed));
+                        consumed += qconsumed;
+                        return (new OdinDirective(name, DirectiveValue.FromString(qstr)), consumed);
+                    }
+                    var rest = s.Substring(consumed);
+                    var m = System.Text.RegularExpressions.Regex.Match(rest, @"\s:[a-zA-Z]");
+                    string operand = (m.Success ? rest.Substring(0, m.Index) : rest).Trim();
+                    consumed += (m.Success ? m.Index : rest.Length);
+                    return (new OdinDirective(name,
+                        operand.Length > 0 ? DirectiveValue.FromString(operand) : null), consumed);
+                }
+            }
 
             // Check for a value after the directive name
             bool needsValue;
@@ -1359,6 +1391,14 @@ namespace Odin.Core.Transform
                         return ParseStringExpressionWithDirectives(trimmed);
                     if (trimmed.StartsWith("%", StringComparison.Ordinal))
                         return ParseStringExpressionWithDirectives(trimmed);
+                    // Value that is only a directive (e.g., `:object {...}`): no source
+                    // expression — the directive supplies the value.
+                    if (trimmed.StartsWith(":", StringComparison.Ordinal))
+                    {
+                        var dirs = ParseRemainingDirectives(trimmed);
+                        if (dirs.Count > 0)
+                            return (FieldExpression.Literal(new OdinNull()), dirs);
+                    }
                     if (trimmed.StartsWith("$const.", StringComparison.Ordinal)
                         || trimmed.StartsWith("$constants.", StringComparison.Ordinal))
                         return (FieldExpression.Copy(trimmed), new List<OdinDirective>());

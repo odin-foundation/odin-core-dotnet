@@ -80,6 +80,9 @@ namespace Odin.Core.Transform
         /// <summary>Source format string.</summary>
         public string SourceFormat;
 
+        /// <summary>Target configuration (format, options).</summary>
+        public TargetConfig? Target;
+
         public ExecContext()
         {
             Source = DynValue.Null();
@@ -621,6 +624,7 @@ namespace Odin.Core.Transform
                 GlobalOutput = DynValue.Object(new List<KeyValuePair<string, DynValue>>()),
                 FieldModifiers = new Dictionary<string, OdinModifiers>(),
                 SourceFormat = sourceFormat,
+                Target = transform.Target,
             };
         }
 
@@ -735,11 +739,41 @@ namespace Odin.Core.Transform
                 : (string.IsNullOrEmpty(pathPrefix) ? cleanName : pathPrefix + "." + cleanName);
 
             // Side-effect-only segments: names starting with "_" (e.g., "_calcSubtotal")
-            // Execute mappings for side effects (like accumulate) but don't write to output
+            // Execute mappings for side effects (like accumulate) but don't write to output.
             if (!isRoot && cleanName.StartsWith("_", StringComparison.Ordinal) && arrayIndex == null)
             {
-                // Process all mappings for side effects only
                 var dummyOutput = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
+
+                // A looping sink iterates its source so accumulators see every item.
+                if (segment.SourcePath != null)
+                {
+                    var sinkSource = ResolvePath(ctx.Source, segment.SourcePath, ctx.Constants, ctx.Accumulators);
+                    var sinkArr = sinkSource.Type == DynValueType.Array
+                        ? sinkSource.AsArray()
+                        : (sinkSource.Type == DynValueType.Null ? new List<DynValue>() : new List<DynValue> { sinkSource });
+                    if (sinkArr != null)
+                    {
+                        for (int idx = 0; idx < sinkArr.Count; idx++)
+                        {
+                            var item = sinkArr[idx];
+                            ctx.LoopVars["_item"] = item;
+                            ctx.LoopVars["_index"] = DynValue.Integer(idx);
+                            ctx.LoopVars["_length"] = DynValue.Integer(sinkArr.Count);
+                            if (segment.Counter != null)
+                            {
+                                ctx.Accumulators[segment.Counter] = DynValue.Integer(idx);
+                                ctx.LoopVars[segment.Counter] = DynValue.Integer(idx);
+                            }
+                            foreach (var mapping in segment.Mappings)
+                                ProcessMapping(mapping, ctx, item, ref dummyOutput, currentPrefix);
+                            ctx.LoopVars.Remove("_item");
+                            ctx.LoopVars.Remove("_index");
+                            ctx.LoopVars.Remove("_length");
+                        }
+                    }
+                    return;
+                }
+
                 if (segment.Items.Count > 0)
                 {
                     foreach (var item in segment.Items)
@@ -782,6 +816,13 @@ namespace Odin.Core.Transform
                         ctx.LoopVars["_item"] = item;
                         ctx.LoopVars["_index"] = DynValue.Integer(idx);
                         ctx.LoopVars["_length"] = DynValue.Integer(items.Count);
+
+                        // A :counter is readable by its name and via @$accumulator.<name>.
+                        if (segment.Counter != null)
+                        {
+                            ctx.Accumulators[segment.Counter] = DynValue.Integer(idx);
+                            ctx.LoopVars[segment.Counter] = DynValue.Integer(idx);
+                        }
 
                         var itemOutput = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
                         foreach (var mapping in segment.Mappings)
@@ -946,8 +987,33 @@ namespace Odin.Core.Transform
             var outputSnapshot = output;
             try
             {
-                var val = EvaluateExpression(mapping.Expression, ctx, currentSource, outputSnapshot);
+                // Field-level :if / :unless guards (truthy path or `path op value`).
+                var ifDir = FindDirective(mapping.Directives, "if");
+                if (ifDir != null && !EvaluateFieldCondition(ifDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot))
+                    return;
+                var unlessDir = FindDirective(mapping.Directives, "unless");
+                if (unlessDir != null && EvaluateFieldCondition(unlessDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot))
+                    return;
+
+                DynValue val;
+                var objectDir = FindDirective(mapping.Directives, "object");
+                if (objectDir != null)
+                    val = BuildInlineObject(objectDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot);
+                else
+                    val = EvaluateExpression(mapping.Expression, ctx, currentSource, outputSnapshot);
+
                 val = ApplyMappingDirectives(val, mapping.Directives, ctx.SourceFormat, mapping.Expression);
+
+                // Validation modifiers: :validate / :enum / :range (honors onValidation policy).
+                if (!ValidateFieldValue(val, mapping, ctx)) return;
+
+                // :raw emits inline JSON structurally instead of an escaped string.
+                if (FindDirective(mapping.Directives, "raw") != null)
+                    val = ParseRawJsonValue(val);
+
+                // :array wraps the value in a single-element array.
+                if (FindDirective(mapping.Directives, "array") != null)
+                    val = DynValue.Array(new List<DynValue> { val });
 
                 // Apply confidential at mapping level
                 if (mapping.Modifiers != null && mapping.Modifiers.Confidential && ctx.EnforceConfidential.HasValue)
@@ -974,6 +1040,181 @@ namespace Odin.Core.Transform
                     Path = mapping.Target,
                 });
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Field-level modifier helpers
+        // ─────────────────────────────────────────────────────────────────────
+
+        private static OdinDirective? FindDirective(List<OdinDirective> directives, string name)
+        {
+            for (int i = 0; i < directives.Count; i++)
+                if (directives[i].Name == name) return directives[i];
+            return null;
+        }
+
+        // Evaluate a field-level :if / :unless condition (truthy path or `path op value`).
+        // The left path resolves against the current loop item when present, else source.
+        private static bool EvaluateFieldCondition(string condition, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
+        {
+            string trimmed = condition.Trim();
+            var m = ConditionPattern.Match(trimmed);
+            if (m.Success)
+            {
+                string pathPart = m.Groups[1].Value;
+                string op = m.Groups[2].Value;
+                string valuePart = m.Groups[3].Value.Trim();
+                var left = ResolvePathWithOutput(currentSource, currentOutput, ctx.GlobalOutput, pathPart, ctx.Constants, ctx.Accumulators);
+                var right = ParseConditionValue(valuePart);
+                return CompareConditionValues(left, op, right);
+            }
+            var val = ResolvePathWithOutput(currentSource, currentOutput, ctx.GlobalOutput, trimmed, ctx.Constants, ctx.Accumulators);
+            return IsTruthy(val);
+        }
+
+        // Build a structural object from an inline :object {key = @path, ...} spec.
+        private static DynValue BuildInlineObject(string spec, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
+        {
+            string trimmed = spec.Trim();
+            if (trimmed.StartsWith("{", StringComparison.Ordinal)) trimmed = trimmed.Substring(1);
+            if (trimmed.EndsWith("}", StringComparison.Ordinal)) trimmed = trimmed.Substring(0, trimmed.Length - 1);
+
+            var entries = new List<KeyValuePair<string, DynValue>>();
+            if (trimmed.Trim().Length > 0)
+            {
+                foreach (var pair in SplitObjectPairs(trimmed))
+                {
+                    int eq = pair.IndexOf('=');
+                    if (eq < 0) continue;
+                    string key = pair.Substring(0, eq).Trim();
+                    string rhs = pair.Substring(eq + 1).Trim();
+                    if (key.Length == 0) continue;
+                    var (expr, _) = ParseFieldExpressionString(rhs);
+                    var v = EvaluateExpression(expr, ctx, currentSource, currentOutput);
+                    entries.Add(new KeyValuePair<string, DynValue>(key, v));
+                }
+            }
+            return DynValue.Object(entries);
+        }
+
+        // Re-parse an inline object RHS expression (e.g. "@insured.name") into a field expression.
+        private static (FieldExpression Expr, List<OdinDirective> Dirs) ParseFieldExpressionString(string rhs)
+        {
+            var trimmed = rhs.Trim();
+            if (trimmed.StartsWith("@", StringComparison.Ordinal) || trimmed.StartsWith("%", StringComparison.Ordinal))
+            {
+                string clean = trimmed.StartsWith("@", StringComparison.Ordinal) ? trimmed.Substring(1) : trimmed;
+                if (trimmed.StartsWith("@", StringComparison.Ordinal))
+                    return (FieldExpression.Copy(clean), new List<OdinDirective>());
+            }
+            return (FieldExpression.Literal(new OdinString(trimmed)), new List<OdinDirective>());
+        }
+
+        // Split an inline object body on commas not nested inside braces.
+        private static List<string> SplitObjectPairs(string body)
+        {
+            var pairs = new List<string>();
+            int depth = 0;
+            var current = new System.Text.StringBuilder();
+            foreach (char ch in body)
+            {
+                if (ch == '{') depth++;
+                else if (ch == '}') depth--;
+                if (ch == ',' && depth == 0)
+                {
+                    pairs.Add(current.ToString());
+                    current.Clear();
+                }
+                else current.Append(ch);
+            }
+            if (current.ToString().Trim().Length > 0) pairs.Add(current.ToString());
+            return pairs;
+        }
+
+        // Parse a string value as JSON for :raw, producing a structural value.
+        private static DynValue ParseRawJsonValue(DynValue val)
+        {
+            if (val.Type != DynValueType.String) return val;
+            try
+            {
+                using var doc = JsonDocument.Parse(val.AsString() ?? "");
+                return DynValue.FromJsonElement(doc.RootElement);
+            }
+            catch
+            {
+                return val;
+            }
+        }
+
+        // Validate a value against :validate / :enum / :range modifiers.
+        // Returns false when the field should be dropped (onValidation = skip or fail).
+        private static bool ValidateFieldValue(DynValue val, FieldMapping mapping, ExecContext ctx)
+        {
+            if (val.Type == DynValueType.Null) return true;
+
+            var validateDir = FindDirective(mapping.Directives, "validate");
+            var enumDir = FindDirective(mapping.Directives, "enum");
+            var rangeDir = FindDirective(mapping.Directives, "range");
+            if (validateDir == null && enumDir == null && rangeDir == null) return true;
+
+            string policy = "fail";
+            if (ctx.Target != null && ctx.Target.Options.TryGetValue("onValidation", out var p))
+                policy = p;
+
+            var failures = new List<string>();
+
+            if (validateDir != null && validateDir.Value?.AsString() != null)
+            {
+                string pattern = validateDir.Value!.AsString()!;
+                string str = CoerceToString(val);
+                bool matched = false;
+                try { matched = System.Text.RegularExpressions.Regex.IsMatch(str, pattern); }
+                catch { failures.Add($"invalid validation pattern '{pattern}'"); }
+                if (!matched && failures.Count == 0)
+                    failures.Add($"value '{str}' does not match pattern '{pattern}'");
+            }
+
+            if (enumDir != null && enumDir.Value?.AsString() != null)
+            {
+                var allowed = new List<string>();
+                foreach (var v in enumDir.Value!.AsString()!.Split(','))
+                    allowed.Add(v.Trim().Trim('"', '\''));
+                string str = CoerceToString(val);
+                if (!allowed.Contains(str))
+                    failures.Add($"value '{str}' is not one of [{string.Join(", ", allowed)}]");
+            }
+
+            if (rangeDir != null && rangeDir.Value?.AsString() != null)
+            {
+                string rangeStr = rangeDir.Value!.AsString()!;
+                var parts = rangeStr.Split(new[] { ".." }, StringSplitOptions.None);
+                double? min = parts.Length > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var mn) ? mn : (double?)null;
+                double? max = parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var mx) ? mx : (double?)null;
+                var num = ToComparableNumber(val);
+                if (num == null)
+                    failures.Add($"value '{CoerceToString(val)}' is not numeric for range {rangeStr}");
+                else if ((min.HasValue && num.Value < min.Value) || (max.HasValue && num.Value > max.Value))
+                    failures.Add($"value {num.Value.ToString(CultureInfo.InvariantCulture)} is outside range {rangeStr}");
+            }
+
+            if (failures.Count == 0) return true;
+
+            string message = $"Validation failed for '{mapping.Target}': {string.Join("; ", failures)}";
+            if (policy == "warn")
+            {
+                ctx.Warnings.Add(new TransformWarning { Message = message, Path = mapping.Target });
+                return true;
+            }
+            if (policy == "skip")
+                return false;
+
+            ctx.Errors.Add(new TransformError
+            {
+                Code = TransformErrorCode.ValidationFailed.Code(),
+                Message = message,
+                Path = mapping.Target,
+            });
+            return false;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1006,6 +1247,9 @@ namespace Odin.Core.Transform
                     {
                         if (ctx.LoopVars.TryGetValue("_length", out var len)) return len;
                     }
+                    // Loop counters declared via :counter are readable by bare name.
+                    var counterKey = path.StartsWith("@", StringComparison.Ordinal) ? path.Substring(1) : path;
+                    if (ctx.LoopVars.TryGetValue(counterKey, out var counterVal)) return counterVal;
                     return ResolvePathWithOutput(currentSource, currentOutput, ctx.GlobalOutput, path, ctx.Constants, ctx.Accumulators);
                 }
 

@@ -199,6 +199,9 @@ namespace Odin.Core.Types
         /// <summary>Source path override. When set, mappings are relative to this path.</summary>
         public string? SourcePath { get; set; }
 
+        /// <summary>Loop counter name declared via :counter. Readable by name and via @$accumulator.</summary>
+        public string? Counter { get; set; }
+
         /// <summary>
         /// Discriminator for conditional segment activation. When set, this segment
         /// only executes if the discriminator condition is satisfied.

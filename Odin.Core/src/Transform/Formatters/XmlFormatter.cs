@@ -221,7 +221,7 @@ namespace Odin.Core.Transform
                     }
 
                     sb.Append('>');
-                    sb.Append(XmlEscape(ScalarToString(value)));
+                    sb.Append(RenderText(ScalarToString(value), elementMods));
                     sb.Append("</").Append(qtag).Append(">\n");
                     break;
                 }
@@ -332,6 +332,17 @@ namespace Odin.Core.Transform
             if (n == Math.Floor(n) && !double.IsInfinity(n) && Math.Abs(n) < 1e15)
                 return ((long)n).ToString(CultureInfo.InvariantCulture);
             return n.ToString("G", CultureInfo.InvariantCulture);
+        }
+
+        // Render element text content, wrapping in a CDATA section when :cdata is set.
+        private static string RenderText(string valueStr, OdinModifiers? mods)
+        {
+            if (mods != null && mods.Cdata)
+            {
+                // Split any embedded CDATA terminator so the section stays well-formed.
+                return "<![CDATA[" + valueStr.Replace("]]>", "]]]]><![CDATA[>") + "]]>";
+            }
+            return XmlEscape(valueStr);
         }
 
         private static string XmlEscape(string s)

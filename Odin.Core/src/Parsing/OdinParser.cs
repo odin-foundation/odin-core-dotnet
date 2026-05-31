@@ -54,7 +54,7 @@ namespace Odin.Core.Parsing
         /// <exception cref="OdinParseException">Thrown on parse errors (P001-P015).</exception>
         public static OdinDocument ParseTokens(IReadOnlyList<Token> tokens, string source, ParseOptions options)
         {
-            var state = new ParserState(tokens, options);
+            var state = new ParserState(tokens, options) { Source = source };
             var docs = ParseDocuments(state);
             if (docs.Count == 0)
                 return OdinDocument.Empty();
@@ -71,7 +71,7 @@ namespace Odin.Core.Parsing
         /// <exception cref="OdinParseException">Thrown on parse errors (P001-P015).</exception>
         public static List<OdinDocument> ParseTokensMulti(IReadOnlyList<Token> tokens, string source, ParseOptions options)
         {
-            var state = new ParserState(tokens, options);
+            var state = new ParserState(tokens, options) { Source = source };
             return ParseDocuments(state);
         }
 
@@ -86,6 +86,7 @@ namespace Odin.Core.Parsing
             public int Pos;
             public string? CurrentHeader;
             public string? PreviousAbsoluteHeader;
+            public string Source = string.Empty;
 
             public ParserState(IReadOnlyList<Token> tokens, ParseOptions options)
             {
@@ -214,6 +215,10 @@ namespace Odin.Core.Parsing
                         ParseAssignment(state, inMetadata, metadata, assignments, modifiers, arrayIndices);
                         break;
 
+                    case TokenType.Directive when !inMetadata && IsBareDirectiveLine(state):
+                        ParseBareDirective(state, assignments);
+                        break;
+
                     case TokenType.Newline:
                     case TokenType.Comment:
                     {
@@ -247,6 +252,59 @@ namespace Odin.Core.Parsing
                 imports: imports,
                 schemas: schemas,
                 conditionals: conditionals);
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Bare segment-directive lines
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Known segment directives that may be written as a bare `:name args` body line.
+        private static readonly HashSet<string> BareDirectives = new HashSet<string>
+        {
+            "loop", "counter", "from", "if", "elif", "else", "literal",
+        };
+
+        // True when the current `:` token begins a bare segment-directive line.
+        private static bool IsBareDirectiveLine(ParserState state)
+        {
+            var tok = state.Peek();
+            return tok != null && tok.TokenType == TokenType.Directive
+                && BareDirectives.Contains(tok.Value);
+        }
+
+        // Parse `:name rest-of-line` into a synthetic `<header>._name = "rest"` assignment,
+        // matching the `_name = "..."` form the transform layer already reads.
+        private static void ParseBareDirective(ParserState state, OrderedMap<string, OdinValue> assignments)
+        {
+            string name = state.CurrentToken.Value;
+            state.Advance(); // consume directive name
+
+            string value = "true";
+            if (!state.IsAtEnd)
+            {
+                var first = state.CurrentToken;
+                if (first.TokenType != TokenType.Newline && first.TokenType != TokenType.Comment)
+                {
+                    int valStart = first.Start;
+                    int valEnd = first.End;
+                    while (!state.IsAtEnd)
+                    {
+                        var t = state.CurrentToken;
+                        if (t.TokenType == TokenType.Newline || t.TokenType == TokenType.Comment)
+                            break;
+                        valEnd = t.End;
+                        state.Advance();
+                    }
+                    value = state.Source.Substring(valStart, valEnd - valStart);
+                }
+            }
+
+            string fullPath = state.CurrentHeader != null
+                ? state.CurrentHeader + "._" + name
+                : "_" + name;
+
+            if (!assignments.ContainsKey(fullPath))
+                assignments.Set(fullPath, new OdinString(value));
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -365,7 +423,8 @@ namespace Odin.Core.Parsing
             while (i < headerValue.Length && (char.IsLetterOrDigit(headerValue[i]) || headerValue[i] == '_'))
                 i++;
             string name = headerValue.Substring(nameStart, i - nameStart);
-            if (name != "type" && name != "if" && name != "elif" && name != "else")
+            if (name != "type" && name != "if" && name != "elif" && name != "else"
+                && name != "loop" && name != "counter" && name != "from")
                 return false;
 
             string path = headerValue.Substring(0, colonPos).TrimEnd();
@@ -397,7 +456,8 @@ namespace Odin.Core.Parsing
                 return true;
             }
 
-            // :if / :elif capture the unquoted expression up to the closing brace.
+            // :if / :elif / :loop / :counter / :from capture the unquoted value
+            // up to the closing brace.
             string expr = headerValue.Substring(i).TrimEnd();
             if (expr.Length == 0)
                 return false;

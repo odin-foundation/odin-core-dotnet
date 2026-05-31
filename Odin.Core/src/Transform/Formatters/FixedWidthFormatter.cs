@@ -41,6 +41,21 @@ namespace Odin.Core.Transform
             var outputObj = value.AsObject();
             if (outputObj == null) return "";
 
+            // Optional fixed record width: pad each line to lineWidth using padChar.
+            int? lineWidth = null;
+            char padChar = ' ';
+            bool truncate = false;
+            if (config != null)
+            {
+                if (config.Options.TryGetValue("lineWidth", out var lwStr)
+                    && int.TryParse(lwStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var lw))
+                    lineWidth = lw;
+                if (config.Options.TryGetValue("padChar", out var pcStr) && pcStr.Length > 0)
+                    padChar = pcStr[0];
+                if (config.Options.TryGetValue("truncate", out var trStr))
+                    truncate = trStr == "true";
+            }
+
             var sb = new StringBuilder();
 
             // Process each segment in order
@@ -80,7 +95,7 @@ namespace Odin.Core.Transform
                         {
                             var itemObj = items[i].AsObject();
                             if (itemObj == null) continue;
-                            sb.Append(BuildFixedWidthLine(fieldDefs, itemObj));
+                            sb.Append(BuildFixedWidthLine(fieldDefs, itemObj, lineWidth, padChar, truncate));
                             sb.Append('\n');
                         }
                     }
@@ -90,7 +105,7 @@ namespace Odin.Core.Transform
                     var obj = segData.AsObject();
                     if (obj != null)
                     {
-                        sb.Append(BuildFixedWidthLine(fieldDefs, obj));
+                        sb.Append(BuildFixedWidthLine(fieldDefs, obj, lineWidth, padChar, truncate));
                         sb.Append('\n');
                     }
                 }
@@ -205,19 +220,21 @@ namespace Odin.Core.Transform
             };
         }
 
-        private static string BuildFixedWidthLine(List<FieldDef> fieldDefs, List<KeyValuePair<string, DynValue>> data)
+        private static string BuildFixedWidthLine(List<FieldDef> fieldDefs, List<KeyValuePair<string, DynValue>> data,
+            int? lineWidth = null, char recordPad = ' ', bool truncate = false)
         {
-            // Calculate line width from max(pos + len)
-            int lineWidth = 0;
+            // Field span: max(pos + len) across the defined fields.
+            int fieldWidth = 0;
             for (int i = 0; i < fieldDefs.Count; i++)
             {
                 int end = fieldDefs[i].Pos + fieldDefs[i].Len;
-                if (end > lineWidth) lineWidth = end;
+                if (end > fieldWidth) fieldWidth = end;
             }
 
-            // Create line buffer filled with spaces
-            var line = new char[lineWidth];
-            for (int i = 0; i < lineWidth; i++) line[i] = ' ';
+            // Buffer holds at least the field span (space-filled for field gaps).
+            int bufWidth = fieldWidth;
+            var line = new char[bufWidth];
+            for (int i = 0; i < bufWidth; i++) line[i] = ' ';
 
             // Place each field
             for (int i = 0; i < fieldDefs.Count; i++)
@@ -259,7 +276,18 @@ namespace Odin.Core.Transform
                 }
             }
 
-            return new string(line);
+            var result = new string(line);
+
+            // Pad the record to the configured fixed line width using padChar.
+            if (lineWidth.HasValue)
+            {
+                if (result.Length < lineWidth.Value)
+                    result += new string(recordPad, lineWidth.Value - result.Length);
+                else if (result.Length > lineWidth.Value && truncate)
+                    result = result.Substring(0, lineWidth.Value);
+            }
+
+            return result;
         }
 
         private static DynValue? FindField(List<KeyValuePair<string, DynValue>> obj, string key)
