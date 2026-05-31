@@ -343,7 +343,11 @@ namespace Odin.Core.Parsing
             }
         }
 
-        // Detects {segment :type "value"} / {segment :if "expr"} header-inline directives.
+        // Detects header-inline directives:
+        //   {segment :type "value"}   -> quoted discriminator value
+        //   {segment :if <expr>}       -> unquoted expression up to the closing brace
+        //   {segment :elif <expr>}     -> unquoted expression up to the closing brace
+        //   {segment :else}            -> bare flag
         // Returns the path part and directive name/value; false when not such a directive.
         private static bool TryExtractInlineDirective(
             string headerValue, out string pathPart, out string dirName, out string dirValue)
@@ -361,22 +365,45 @@ namespace Odin.Core.Parsing
             while (i < headerValue.Length && (char.IsLetterOrDigit(headerValue[i]) || headerValue[i] == '_'))
                 i++;
             string name = headerValue.Substring(nameStart, i - nameStart);
-            if (name != "type" && name != "if")
+            if (name != "type" && name != "if" && name != "elif" && name != "else")
                 return false;
+
+            string path = headerValue.Substring(0, colonPos).TrimEnd();
+
+            // :else is a bare flag with no value.
+            if (name == "else")
+            {
+                dirName = name;
+                dirValue = "true";
+                pathPart = path;
+                return true;
+            }
 
             while (i < headerValue.Length && (headerValue[i] == ' ' || headerValue[i] == '\t'))
                 i++;
-            if (i >= headerValue.Length || headerValue[i] != '"')
-                return false;
 
-            int valueStart = i + 1;
-            int valueEnd = headerValue.LastIndexOf('"');
-            if (valueEnd <= valueStart - 1)
-                return false;
+            // :type takes a quoted discriminator value.
+            if (name == "type")
+            {
+                if (i >= headerValue.Length || headerValue[i] != '"')
+                    return false;
+                int qStart = i + 1;
+                int qEnd = headerValue.LastIndexOf('"');
+                if (qEnd <= qStart - 1)
+                    return false;
+                dirName = name;
+                dirValue = headerValue.Substring(qStart, qEnd - qStart);
+                pathPart = path;
+                return true;
+            }
 
+            // :if / :elif capture the unquoted expression up to the closing brace.
+            string expr = headerValue.Substring(i).TrimEnd();
+            if (expr.Length == 0)
+                return false;
             dirName = name;
-            dirValue = headerValue.Substring(valueStart, valueEnd - valueStart);
-            pathPart = headerValue.Substring(0, colonPos).TrimEnd();
+            dirValue = expr;
+            pathPart = path;
             return true;
         }
 

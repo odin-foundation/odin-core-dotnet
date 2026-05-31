@@ -226,8 +226,14 @@ namespace Odin.Core.Types
         /// <summary>Multi-pass number. Null means this segment runs in the default (first) pass.</summary>
         public int? Pass { get; set; }
 
-        /// <summary>Guard condition expression. When set, the segment is skipped if the condition is false.</summary>
+        /// <summary>Guard condition as a legacy quoted-infix string. Null when the condition is a verb expression or absent.</summary>
         public string? Condition { get; set; }
+
+        /// <summary>Guard condition as a parsed verb expression. Null when the condition is a legacy infix string or absent.</summary>
+        public FieldExpression? ConditionExpr { get; set; }
+
+        /// <summary>Conditional chain role: "if", "elif", "else", or null for an unconditional segment.</summary>
+        public string? ConditionKind { get; set; }
     }
 
     /// <summary>
@@ -240,6 +246,9 @@ namespace Odin.Core.Types
 
         /// <summary>Optional directive value or argument.</summary>
         public string? Value { get; set; }
+
+        /// <summary>Parsed verb-expression condition (for if/elif written as a verb expression).</summary>
+        public FieldExpression? Expr { get; set; }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────

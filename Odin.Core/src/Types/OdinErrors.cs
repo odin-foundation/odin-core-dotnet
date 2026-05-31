@@ -94,6 +94,8 @@ public enum TransformErrorCode
     PositionOverflow,
     /// <summary>T011: Incompatible conversion — incompatible or unknown conversion target.</summary>
     IncompatibleConversion,
+    /// <summary>T012: Dangling branch — conditional branch (elif/else) with no preceding if.</summary>
+    DanglingBranch,
 }
 
 /// <summary>Extension methods for error codes.</summary>
@@ -233,6 +235,7 @@ public static class ErrorCodeExtensions
         TransformErrorCode.LoopSourceNotArray => "T009",
         TransformErrorCode.PositionOverflow => "T010",
         TransformErrorCode.IncompatibleConversion => "T011",
+        TransformErrorCode.DanglingBranch => "T012",
         _ => "T000",
     };
 
@@ -250,6 +253,7 @@ public static class ErrorCodeExtensions
         TransformErrorCode.LoopSourceNotArray => "Loop source not array",
         TransformErrorCode.PositionOverflow => "Position overflow",
         TransformErrorCode.IncompatibleConversion => "Incompatible conversion",
+        TransformErrorCode.DanglingBranch => "Dangling conditional branch",
         _ => "Unknown error",
     };
 
@@ -267,6 +271,7 @@ public static class ErrorCodeExtensions
         "T009" => TransformErrorCode.LoopSourceNotArray,
         "T010" => TransformErrorCode.PositionOverflow,
         "T011" => TransformErrorCode.IncompatibleConversion,
+        "T012" => TransformErrorCode.DanglingBranch,
         _ => null,
     };
 }

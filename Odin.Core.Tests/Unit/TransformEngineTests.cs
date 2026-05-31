@@ -2428,7 +2428,7 @@ direction = ""json->json""
 {Quote}
 DriverName = ""@driver.name""
 
-{DuiDetails :if ""@driver.has_dui = true""}
+{DuiDetails :if @driver.has_dui}
 State = ""@driver.dui.state""
 ";
 
@@ -2468,10 +2468,10 @@ State = ""@driver.dui.state""
     public void HeaderInlineIf_EmitsSyntheticConditionAssignment()
     {
         var doc = Core.Odin.Parse(@"
-{DuiDetails :if ""@driver.has_dui = true""}
+{DuiDetails :if @driver.has_dui}
 State = ""@driver.dui.state""
 ");
         Assert.True(doc.Assignments.TryGetValue("DuiDetails._if", out var cond));
-        Assert.Equal("@driver.has_dui = true", Assert.IsType<OdinString>(cond).Value);
+        Assert.Equal("@driver.has_dui", Assert.IsType<OdinString>(cond).Value);
     }
 }

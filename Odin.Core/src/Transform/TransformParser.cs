@@ -572,6 +572,8 @@ namespace Odin.Core.Transform
             Discriminator? discriminator = null;
             int? pass = null;
             string? condition = null;
+            FieldExpression? conditionExpr = null;
+            string? conditionKind = null;
             var mappings = new List<FieldMapping>();
             var children = new List<TransformSegment>();
             var childFields = new Dictionary<string, List<(string, OdinValue, OdinModifiers?)>>();
@@ -616,7 +618,15 @@ namespace Odin.Core.Transform
                             break;
                         case "_if":
                         case "_when":
-                            condition = OdinValueToString(value);
+                            conditionKind = "if";
+                            ParseConditionValue(value, out condition, out conditionExpr);
+                            break;
+                        case "_elif":
+                            conditionKind = "elif";
+                            ParseConditionValue(value, out condition, out conditionExpr);
+                            break;
+                        case "_else":
+                            conditionKind = "else";
                             break;
                         case "_discriminator":
                             if (value is OdinReference refVal)
@@ -705,7 +715,47 @@ namespace Odin.Core.Transform
                 Items = items,
                 Pass = pass,
                 Condition = condition,
+                ConditionExpr = conditionExpr,
+                ConditionKind = conditionKind,
             };
+        }
+
+        // Parses a segment condition value into either a parsed verb expression
+        // or a legacy quoted-infix string. Verb values and "%…" strings become
+        // expressions; any other string is treated as a legacy infix condition.
+        private static void ParseConditionValue(OdinValue value, out string? infix, out FieldExpression? expr)
+        {
+            infix = null;
+            expr = null;
+
+            switch (value)
+            {
+                case OdinVerb:
+                {
+                    var (e, _) = ValueToFieldExpressionWithDirectives(value);
+                    expr = e;
+                    break;
+                }
+                case OdinReference refVal:
+                    expr = FieldExpression.Copy(refVal.Path);
+                    break;
+                case OdinString strVal:
+                {
+                    if (strVal.Value.TrimStart().StartsWith("%", StringComparison.Ordinal))
+                    {
+                        var (e, _) = ParseStringExpressionWithDirectives(strVal.Value.TrimStart());
+                        expr = e;
+                    }
+                    else
+                    {
+                        infix = strVal.Value;
+                    }
+                    break;
+                }
+                default:
+                    infix = OdinValueToString(value);
+                    break;
+            }
         }
 
         private static FieldMapping BuildFieldMapping(string target, OdinValue value, OdinModifiers? modifiers)

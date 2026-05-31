@@ -287,6 +287,8 @@ namespace Odin.Core.Transform
 
             bool isFirstPass = true;
             int? currentPass = null;
+            // Conditional chain state: "none" (no chain), "pending" (chain open, no branch taken), "taken".
+            string branch = "none";
             foreach (var seg in ordered)
             {
                 // Reset non-persist accumulators at pass transitions
@@ -305,9 +307,11 @@ namespace Odin.Core.Transform
                     }
                     isFirstPass = false;
                     currentPass = segPass;
+                    // Chains do not span pass boundaries.
+                    branch = "none";
                 }
 
-                ProcessSegment(seg, ctx, ref output, "");
+                ProcessChainSegment(seg, ctx, ref output, ref branch);
                 ctx.GlobalOutput = output;
             }
 
@@ -640,12 +644,70 @@ namespace Odin.Core.Transform
         // Segment processing
         // ─────────────────────────────────────────────────────────────────────
 
+        // Applies a single segment within an if/elif/else chain, advancing the
+        // shared branch state. A chain is a run of consecutive segments: one `if`,
+        // then any `elif`, then an optional `else`. Only the first branch whose
+        // condition holds is emitted; the rest are skipped. Any unconditional
+        // segment breaks the chain.
+        private static void ProcessChainSegment(TransformSegment segment, ExecContext ctx, ref DynValue output, ref string branch)
+        {
+            switch (segment.ConditionKind)
+            {
+                case "if":
+                {
+                    bool taken = EvaluateSegmentCondition(segment, ctx);
+                    branch = taken ? "taken" : "pending";
+                    if (taken) ProcessSegment(segment, ctx, ref output, "");
+                    break;
+                }
+                case "elif":
+                {
+                    if (branch == "none")
+                    {
+                        ctx.Errors.Add(new TransformError
+                        {
+                            Code = TransformErrorCode.DanglingBranch.Code(),
+                            Message = "'elif' segment has no preceding 'if'",
+                            Path = segment.Name,
+                        });
+                        return;
+                    }
+                    if (branch == "taken") return;
+                    bool taken = EvaluateSegmentCondition(segment, ctx);
+                    branch = taken ? "taken" : "pending";
+                    if (taken) ProcessSegment(segment, ctx, ref output, "");
+                    break;
+                }
+                case "else":
+                {
+                    if (branch == "none")
+                    {
+                        ctx.Errors.Add(new TransformError
+                        {
+                            Code = TransformErrorCode.DanglingBranch.Code(),
+                            Message = "'else' segment has no preceding 'if'",
+                            Path = segment.Name,
+                        });
+                        return;
+                    }
+                    if (branch == "pending") ProcessSegment(segment, ctx, ref output, "");
+                    branch = "none";
+                    break;
+                }
+                default:
+                    branch = "none";
+                    ProcessSegment(segment, ctx, ref output, "");
+                    break;
+            }
+        }
+
         private static void ProcessSegment(TransformSegment segment, ExecContext ctx, ref DynValue output, string pathPrefix)
         {
-            // Check condition
-            if (segment.Condition != null)
+            // Guard condition (chained segments are pre-filtered by ProcessChainSegment;
+            // this also covers child segments reached directly).
+            if (segment.ConditionExpr != null || segment.Condition != null)
             {
-                if (!EvaluateSegmentCondition(segment.Condition, ctx)) return;
+                if (!EvaluateSegmentCondition(segment, ctx)) return;
             }
 
             // Check discriminator
@@ -2116,7 +2178,19 @@ namespace Odin.Core.Transform
         /// Evaluate whether a <see cref="DynValue"/> is truthy.
         /// </summary>
         // Evaluates a segment condition: "path op value" comparison or a truthy path check.
-        private static bool EvaluateSegmentCondition(string condition, ExecContext ctx)
+        // Evaluates a segment condition: a verb expression (coerced to truthy),
+        // or a legacy quoted-infix string.
+        private static bool EvaluateSegmentCondition(TransformSegment segment, ExecContext ctx)
+        {
+            if (segment.ConditionExpr != null)
+            {
+                var val = EvaluateExpression(segment.ConditionExpr, ctx, ctx.Source, ctx.GlobalOutput);
+                return IsTruthy(val);
+            }
+            return EvaluateInfixCondition(segment.Condition ?? "", ctx);
+        }
+
+        private static bool EvaluateInfixCondition(string condition, ExecContext ctx)
         {
             string trimmed = condition.Trim();
 
