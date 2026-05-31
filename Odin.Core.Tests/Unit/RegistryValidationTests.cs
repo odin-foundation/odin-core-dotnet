@@ -1,5 +1,4 @@
 using System;
-using System.IO;
 using System.Linq;
 using Odin.Core.Resolver;
 using Odin.Core.Types;
@@ -13,18 +12,6 @@ public class RegistryValidationTests
     private static int CountV013(ValidationResult result)
     {
         return result.Errors.Count(e => e.ErrorCode == ValidationErrorCode.UnresolvedReference);
-    }
-
-    private static string CanonicalSchemaPath()
-    {
-        var probe = AppContext.BaseDirectory;
-        for (int i = 0; i < 12 && probe != null; i++)
-        {
-            var candidate = Path.Combine(probe, "schemas", "insurance", "personal", "auto", "policy.schema.odin");
-            if (File.Exists(candidate)) return candidate;
-            probe = Directory.GetParent(probe)?.FullName;
-        }
-        throw new FileNotFoundException("canonical schema not found");
     }
 
     [Fact]
@@ -61,19 +48,21 @@ public class RegistryValidationTests
     }
 
     [Fact]
-    public void CanonicalSchema_TypeInternalImportedRefs_DoNotEmitV013()
+    public void TypeInternalTypeRef_DoesNotEmitV013_WithoutRegistry()
     {
-        var schema = Core.Odin.ParseSchema(File.ReadAllText(CanonicalSchemaPath()));
+        // @typeRef inside a type definition only resolves when the type is used;
+        // it must not surface as a root-level unresolved reference (V013).
+        var schema = Core.Odin.ParseSchema("{@policy}\nstatus = @policy_status\n{@policy_status}\ncode = ! string\n");
         var result = ValidationEngine.Validate(OdinDocument.Empty(), schema, ValidateOptions.Default);
         Assert.Equal(0, CountV013(result));
     }
 
     [Fact]
-    public void CanonicalSchema_TermFieldsNestIntoPolicyType()
+    public void RelativeSubsection_NestsIntoType_NotRoot()
     {
-        var schema = Core.Odin.ParseSchema(File.ReadAllText(CanonicalSchemaPath()));
-
         // {.term} inside {@policy} nests into the policy type, not the schema root.
+        var schema = Core.Odin.ParseSchema("{@policy}\nnumber = !\n{.term}\neffective = !date\nexpiration = !date\n");
+
         var policy = schema.Types["policy"];
         var fieldNames = policy.SchemaFields.Select(f => f.Name).ToHashSet();
         Assert.Contains("term.effective", fieldNames);
