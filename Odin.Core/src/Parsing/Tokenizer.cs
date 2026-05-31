@@ -279,6 +279,14 @@ namespace Odin.Core.Parsing
                         case '"': value.Append('"'); break;
                         case '/': value.Append('/'); break;
                         case '0': value.Append('\0'); break;
+                        case '$':
+                            // Literal dollar; preserve the backslash before ${ so the
+                            // interpolation layer recognizes the escaped interpolation marker.
+                            if (!state.IsAtEnd && state.Peek() == '{')
+                                value.Append("\\$");
+                            else
+                                value.Append('$');
+                            break;
                         case 'u':
                         {
                             char unicodeChar = ScanUnicodeEscape(state, 4, startLine, startCol);
@@ -942,6 +950,10 @@ namespace Odin.Core.Parsing
                             var num = ScanNumber(state);
                             return new Token(TokenType.NumberPrefix, start, num.End, startLine, startCol, num.Value);
                         }
+                        // '#@' is a number-prefixed reference; emit an empty NumberPrefix
+                        // so the value parser pairs it with the following reference.
+                        if (next == '@')
+                            return new Token(TokenType.NumberPrefix, start, state.Pos, startLine, startCol, string.Empty);
                         // Bare '#' with no valid follower
                         throw new OdinParseException(
                             ParseErrorCode.InvalidTypePrefix,

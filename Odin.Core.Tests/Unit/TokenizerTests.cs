@@ -301,6 +301,21 @@ public class TokenizerTests
     }
 
     [Fact]
+    public void Tokenize_EscapedDollar()
+    {
+        var tokens = NonTrivialTokens("x = \"5 \\$ each\"");
+        Assert.Equal("5 $ each", tokens[2].Value);
+    }
+
+    [Fact]
+    public void Tokenize_EscapedDollarBrace_PreservesBackslash()
+    {
+        // \${ keeps the backslash so the interpolation layer suppresses the marker.
+        var tokens = NonTrivialTokens("x = \"\\${@.field}\"");
+        Assert.Equal("\\${@.field}", tokens[2].Value);
+    }
+
+    [Fact]
     public void Tokenize_UnicodeEscape_4digit()
     {
         var tokens = NonTrivialTokens("x = \"\\u0041\"");

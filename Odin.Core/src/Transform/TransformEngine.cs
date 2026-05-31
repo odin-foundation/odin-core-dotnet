@@ -1254,7 +1254,17 @@ namespace Odin.Core.Transform
                 }
 
                 case LiteralExpression lit:
-                    return OdinValueToDyn(lit.Value);
+                {
+                    var litVal = OdinValueToDyn(lit.Value);
+                    // Interpolate ${...} markers embedded in literal strings.
+                    if (litVal.Type == DynValueType.String)
+                    {
+                        var s = litVal.AsString() ?? "";
+                        if (s.Contains("${"))
+                            return InterpolateString(s, ctx, currentSource, currentOutput);
+                    }
+                    return litVal;
+                }
 
                 case TransformExpression txExpr:
                     return ExecuteVerbCall(txExpr.Call, ctx, currentSource, currentOutput);
@@ -1272,6 +1282,110 @@ namespace Odin.Core.Transform
 
                 default:
                     return DynValue.Null();
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // String interpolation
+        // ─────────────────────────────────────────────────────────────────────
+
+        private const int MaxInterpolations = 640;
+
+        /// <summary>
+        /// Interpolate ${...} markers in a template string. Resolves ${@path} and
+        /// ${@.path} via path lookup and ${%verb args} via verb evaluation. A
+        /// backslash-escaped marker (\${...}) is emitted literally as ${...}.
+        /// </summary>
+        private static DynValue InterpolateString(string template, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
+        {
+            var sb = new System.Text.StringBuilder(template.Length);
+            int i = 0;
+            int count = 0;
+
+            while (i < template.Length)
+            {
+                bool escaped = template[i] == '\\' && i + 1 < template.Length && template[i + 1] == '$';
+                int dollar = escaped ? i + 1 : i;
+
+                if (template[dollar] == '$' && dollar + 1 < template.Length && template[dollar + 1] == '{')
+                {
+                    int close = template.IndexOf('}', dollar + 2);
+                    // Require at least one char between braces, matching ${(.+?)}.
+                    if (close > dollar + 2)
+                    {
+                        if (++count > MaxInterpolations)
+                        {
+                            sb.Append(template, i, template.Length - i);
+                            break;
+                        }
+
+                        string expr = template.Substring(dollar + 2, close - (dollar + 2));
+
+                        if (escaped)
+                        {
+                            sb.Append("${").Append(expr).Append('}');
+                        }
+                        else
+                        {
+                            sb.Append(EvaluateInterpolationExpr(expr.Trim(), ctx, currentSource, currentOutput,
+                                template.Substring(dollar, close - dollar + 1)));
+                        }
+
+                        i = close + 1;
+                        continue;
+                    }
+                }
+
+                sb.Append(template[i]);
+                i++;
+            }
+
+            return DynValue.String(sb.ToString());
+        }
+
+        private static string EvaluateInterpolationExpr(
+            string expr, ExecContext ctx, DynValue currentSource, DynValue currentOutput, string original)
+        {
+            if (expr.StartsWith("%", StringComparison.Ordinal))
+            {
+                var verbExpr = TransformParser.ParseInlineVerbExpression(expr);
+                var val = EvaluateExpression(verbExpr, ctx, currentSource, currentOutput);
+                return InterpolatedValueToString(val);
+            }
+
+            if (expr.StartsWith("@", StringComparison.Ordinal))
+            {
+                var val = ResolvePathWithOutput(currentSource, currentOutput, ctx.GlobalOutput,
+                    expr.Substring(1), ctx.Constants, ctx.Accumulators);
+                return InterpolatedValueToString(val);
+            }
+
+            // Unknown marker: leave untouched.
+            return original;
+        }
+
+        private static string InterpolatedValueToString(DynValue val)
+        {
+            switch (val.Type)
+            {
+                case DynValueType.Null: return "";
+                case DynValueType.String: return val.AsString() ?? "";
+                case DynValueType.Bool: return val.AsBool() == true ? "true" : "false";
+                case DynValueType.Integer: return val.AsInt64()?.ToString(CultureInfo.InvariantCulture) ?? "";
+                case DynValueType.Float: return val.AsDouble()?.ToString(CultureInfo.InvariantCulture) ?? "";
+                case DynValueType.FloatRaw:
+                case DynValueType.CurrencyRaw:
+                    return val.AsString() ?? "";
+                case DynValueType.Currency:
+                case DynValueType.Percent:
+                    return val.AsDouble()?.ToString(CultureInfo.InvariantCulture) ?? "";
+                case DynValueType.Date:
+                case DynValueType.Timestamp:
+                case DynValueType.Time:
+                case DynValueType.Duration:
+                    return val.AsString() ?? "";
+                case DynValueType.Reference: return "@" + (val.AsString() ?? "");
+                default: return CoerceToString(val);
             }
         }
 

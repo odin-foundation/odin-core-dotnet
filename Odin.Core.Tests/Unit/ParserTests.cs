@@ -36,6 +36,45 @@ public class ParserTests
     }
 
     [Fact]
+    public void Parse_IntegerPrefixOnReference_BecomesTypedReference()
+    {
+        var doc = Core.Odin.Parse("year = ##@.year");
+        var val = doc.Get("year");
+        var reference = Assert.IsType<OdinReference>(val);
+        Assert.Equal(".year", reference.Path);
+        var dir = Assert.Single(reference.Directives);
+        Assert.Equal("type", dir.Name);
+        Assert.Equal("integer", dir.Value?.AsString());
+    }
+
+    [Fact]
+    public void Parse_CurrencyPrefixOnReference_BecomesTypedReference()
+    {
+        var doc = Core.Odin.Parse("premium = #$@.premium");
+        var reference = Assert.IsType<OdinReference>(doc.Get("premium"));
+        Assert.Equal(".premium", reference.Path);
+        var dir = Assert.Single(reference.Directives);
+        Assert.Equal("type", dir.Name);
+        Assert.Equal("currency", dir.Value?.AsString());
+    }
+
+    [Fact]
+    public void Parse_NumberPrefixOnReference_BecomesTypedReference()
+    {
+        var doc = Core.Odin.Parse("rate = #@.rate");
+        var reference = Assert.IsType<OdinReference>(doc.Get("rate"));
+        Assert.Equal("number", Assert.Single(reference.Directives).Value?.AsString());
+    }
+
+    [Fact]
+    public void Parse_PrefixedNumber_StillParsesAsNumber()
+    {
+        // A numeric prefix on an actual number is unaffected by the reference coercion path.
+        var doc = Core.Odin.Parse("year = ##2021");
+        Assert.Equal(2021L, doc.GetInteger("year"));
+    }
+
+    [Fact]
     public void Parse_BooleanTrue()
     {
         var doc = Core.Odin.Parse("active = true");

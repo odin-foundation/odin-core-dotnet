@@ -62,16 +62,32 @@ namespace Odin.Core.Parsing
                         string.Format(CultureInfo.InvariantCulture, "Unquoted string \"{0}\" - use double quotes", token.Value));
 
                 case TokenType.NumberPrefix:
+                {
+                    var coerced = TryParsePrefixedReference(tokens, pos, token, "number");
+                    if (coerced.HasValue) return coerced.Value;
                     return (ParseNumber(token.Value, token.Line, token.Column), 1);
+                }
 
                 case TokenType.IntegerPrefix:
+                {
+                    var coerced = TryParsePrefixedReference(tokens, pos, token, "integer");
+                    if (coerced.HasValue) return coerced.Value;
                     return (ParseInteger(token.Value, token.Line, token.Column), 1);
+                }
 
                 case TokenType.CurrencyPrefix:
+                {
+                    var coerced = TryParsePrefixedReference(tokens, pos, token, "currency");
+                    if (coerced.HasValue) return coerced.Value;
                     return (ParseCurrency(token.Value, token.Line, token.Column), 1);
+                }
 
                 case TokenType.PercentPrefix:
+                {
+                    var coerced = TryParsePrefixedReference(tokens, pos, token, "percent");
+                    if (coerced.HasValue) return coerced.Value;
                     return (ParsePercent(token.Value, token.Line, token.Column), 1);
+                }
 
                 case TokenType.ReferencePrefix:
                     return (OdinValues.Reference(token.Value), 1);
@@ -193,6 +209,24 @@ namespace Odin.Core.Parsing
                         token.Line, token.Column,
                         string.Format(CultureInfo.InvariantCulture, "unexpected token type {0} for value", token.TokenType));
             }
+        }
+
+        /// <summary>
+        /// Parse a reference immediately following a numeric type prefix (e.g. ##@.year, #$@.premium).
+        /// Returns the reference carrying a synthetic :type directive that coerces the resolved
+        /// value on output. Returns null when the prefix carries a number, not a reference.
+        /// </summary>
+        private static (OdinValue Value, int Consumed)? TryParsePrefixedReference(
+            IReadOnlyList<Token> tokens, int pos, Token prefix, string kind)
+        {
+            if (!string.IsNullOrEmpty(prefix.Value))
+                return null;
+            if (pos + 1 >= tokens.Count || tokens[pos + 1].TokenType != TokenType.ReferencePrefix)
+                return null;
+
+            var reference = OdinValues.Reference(tokens[pos + 1].Value)
+                .WithDirectives(new[] { new OdinDirective("type", DirectiveValue.FromString(kind)) });
+            return (reference, 2);
         }
 
         /// <summary>

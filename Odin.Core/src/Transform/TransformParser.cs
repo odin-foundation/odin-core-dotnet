@@ -970,6 +970,16 @@ namespace Odin.Core.Transform
             return dirs;
         }
 
+        /// <summary>
+        /// Parse an inline verb expression (e.g. "%upper @.name") into a field expression.
+        /// Used by string interpolation to evaluate embedded ${%verb ...} markers.
+        /// </summary>
+        internal static FieldExpression ParseInlineVerbExpression(string raw)
+        {
+            var (expr, _) = ParseVerbExpression(raw);
+            return expr;
+        }
+
         private static (FieldExpression Expr, int Consumed) ParseVerbExpression(string raw)
         {
             bool isCustom = raw.StartsWith("%&", StringComparison.Ordinal);

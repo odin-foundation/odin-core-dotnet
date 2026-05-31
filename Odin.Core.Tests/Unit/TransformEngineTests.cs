@@ -62,6 +62,49 @@ public class TransformEngineTests
     }
 
     [Fact]
+    public void InterpolatesPathMarkerInLiteral()
+    {
+        var t = MinimalTransform(new List<FieldMapping>
+        {
+            new FieldMapping
+            {
+                Target = "Greeting",
+                Expression = FieldExpression.Literal(new OdinString("Hi ${@.name}!")),
+            }
+        });
+        var result = TransformEngine.Execute(t, Obj(("name", Str("Alice"))));
+        Assert.True(result.Success);
+        Assert.Equal(Str("Hi Alice!"), result.Output!.Get("Greeting"));
+    }
+
+    [Fact]
+    public void InterpolatesVerbMarkerInLiteral()
+    {
+        var transform = "{$}\nodin = \"1.0.0\"\ntransform = \"1.0.0\"\ndirection = \"odin->json\"\n\n"
+            + "{$source}\nformat = \"odin\"\n\n{$target}\nformat = \"json\"\n\n"
+            + "{Out}\nloud = \"${%upper @.name}\"\n";
+        var result = Core.Odin.ExecuteTransform(transform, Obj(("name", Str("alice"))));
+        Assert.Contains("\"loud\": \"ALICE\"", result.Formatted);
+    }
+
+    [Fact]
+    public void EscapedMarkerSuppressesInterpolation()
+    {
+        var t = MinimalTransform(new List<FieldMapping>
+        {
+            new FieldMapping
+            {
+                // \${ reaches the engine as a literal backslash-dollar-brace.
+                Target = "Tpl",
+                Expression = FieldExpression.Literal(new OdinString("Use \\${@.field} here")),
+            }
+        });
+        var result = TransformEngine.Execute(t, Obj(("field", Str("X"))));
+        Assert.True(result.Success);
+        Assert.Equal(Str("Use ${@.field} here"), result.Output!.Get("Tpl"));
+    }
+
+    [Fact]
     public void NestedCopy()
     {
         var t = MinimalTransform(new List<FieldMapping>
