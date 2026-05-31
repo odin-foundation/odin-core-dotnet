@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using Odin.Core.Resolver;
 using Odin.Core.Types;
 
 namespace Odin.Core.Validation
@@ -26,6 +27,23 @@ namespace Odin.Core.Validation
             OdinDocument doc,
             OdinSchemaDefinition schema,
             ValidateOptions? options = null)
+        {
+            return Validate(doc, schema, options, null);
+        }
+
+        /// <summary>
+        /// Validate a document against a schema, resolving <c>@alias.typename</c> references via a registry.
+        /// </summary>
+        /// <param name="doc">The document to validate.</param>
+        /// <param name="schema">The schema to validate against.</param>
+        /// <param name="options">Optional validation options.</param>
+        /// <param name="typeRegistry">Optional type registry from resolved imports.</param>
+        /// <returns>A <see cref="ValidationResult"/> with any errors found.</returns>
+        public static ValidationResult Validate(
+            OdinDocument doc,
+            OdinSchemaDefinition schema,
+            ValidateOptions? options,
+            TypeRegistry? typeRegistry)
         {
             var opts = options ?? ValidateOptions.Default;
             var errors = new List<ValidationError>();
@@ -84,7 +102,7 @@ namespace Odin.Core.Validation
             if (opts.ValidateReferences)
             {
                 ValidateReferences(doc, errors);
-                ValidateSchemaReferences(schema, errors);
+                ValidateSchemaReferences(schema, typeRegistry, errors);
             }
 
             // 6. Strict mode: check for unknown fields
@@ -963,43 +981,40 @@ namespace Odin.Core.Validation
         }
 
         /// <summary>
+        /// Look up a type by name, consulting the registry first then local schema types.
+        /// </summary>
+        private static SchemaType? LookupType(
+            OdinSchemaDefinition schema,
+            TypeRegistry? registry,
+            string name)
+        {
+            if (registry != null)
+            {
+                var fromRegistry = registry.Lookup(name);
+                if (fromRegistry != null)
+                    return fromRegistry;
+            }
+            return schema.Types.TryGetValue(name, out var local) ? local : null;
+        }
+
+        /// <summary>
         /// Validate type references in schema (V012 circular, V013 unresolved).
+        /// V013 scans only top-level schema fields; imported types resolve via the registry.
         /// </summary>
         private static void ValidateSchemaReferences(
             OdinSchemaDefinition schema,
+            TypeRegistry? registry,
             List<ValidationError> errors)
         {
             var typeNames = new HashSet<string>(schema.Types.Keys);
 
-            // Check each type's fields for @TypeRef references
-            foreach (var typeKvp in schema.Types)
-            {
-                var typeName = typeKvp.Key;
-                foreach (var field in typeKvp.Value.SchemaFields)
-                {
-                    if (field.FieldType is TypeRefFieldType typeRef)
-                    {
-                        var refName = typeRef.Name;
-                        if (!typeNames.Contains(refName))
-                        {
-                            // V013: Unresolved reference
-                            errors.Add(new ValidationError(
-                                ValidationErrorCode.UnresolvedReference,
-                                typeName + "." + field.Name,
-                                string.Format(CultureInfo.InvariantCulture,
-                                    "Unresolved type reference: @{0}", refName)));
-                        }
-                    }
-                }
-            }
-
-            // Check for top-level fields with @TypeRef
+            // Check for top-level fields with @TypeRef (V013)
             foreach (var fieldKvp in schema.Fields)
             {
                 if (fieldKvp.Value.FieldType is TypeRefFieldType typeRef)
                 {
                     var refName = typeRef.Name;
-                    if (!typeNames.Contains(refName))
+                    if (LookupType(schema, registry, refName) == null)
                     {
                         errors.Add(new ValidationError(
                             ValidationErrorCode.UnresolvedReference,

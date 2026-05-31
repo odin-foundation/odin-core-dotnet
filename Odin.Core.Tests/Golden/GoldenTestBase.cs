@@ -77,6 +77,9 @@ public class TestCase
         }
     }
 
+    [JsonPropertyName("structural")]
+    public bool Structural { get; set; }
+
     [JsonPropertyName("expectError")]
     public ExpectError? ExpectError { get; set; }
 

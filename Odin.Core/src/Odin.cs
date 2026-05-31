@@ -120,6 +120,27 @@ public static class Odin
         return ValidationEngine.Validate(doc, schema, options);
     }
 
+    /// <summary>Validate a document against a schema, resolving imported type references via a registry.</summary>
+    public static ValidationResult Validate(OdinDocument doc, OdinSchemaDefinition schema, ValidateOptions? options, TypeRegistry? typeRegistry)
+    {
+        return ValidationEngine.Validate(doc, schema, options, typeRegistry);
+    }
+
+    /// <summary>Resolve a schema file's imports, then validate the document against it with the merged type registry.</summary>
+    public static ValidationResult ValidateWithImports(
+        OdinDocument doc,
+        string schemaPath,
+        IFileReader reader,
+        ValidateOptions? options = null,
+        ResolverOptions? resolverOptions = null)
+    {
+        var resolver = new ImportResolver(reader, resolverOptions);
+        resolver.DocumentParser = Parse;
+        resolver.SchemaParser = ParseSchema;
+        var resolved = resolver.ResolveSchema(schemaPath);
+        return ValidationEngine.Validate(doc, resolved.Schema, options, resolved.TypeRegistry);
+    }
+
     /// <summary>Serialize a schema definition back to ODIN schema text.</summary>
     public static string SerializeSchema(OdinSchemaDefinition schema)
     {

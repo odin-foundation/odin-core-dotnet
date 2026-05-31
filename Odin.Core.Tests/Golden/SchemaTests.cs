@@ -69,14 +69,43 @@ public class SchemaTests : GoldenTestBase
                 var schema = Core.Odin.ParseSchema(inputText);
                 Assert.NotNull(schema);
 
-                // Additional structural verification could be added here
-                // based on what the expected object contains
+                // Structural cases assert that expected type/root field keys exist.
+                if (test.Structural && test.ExpectedRaw.HasValue)
+                    AssertStructure(suiteName, testId, schema, test.ExpectedRaw.Value);
             }
         }
         catch (Exception ex) when (ex is not Xunit.Sdk.XunitException)
         {
             Assert.Fail(
                 $"[{suiteName}/{testId}] Schema test failed with unexpected error: {ex.Message}");
+        }
+    }
+
+    private static void AssertStructure(
+        string suiteName, string testId, OdinSchemaDefinition schema, JsonElement expected)
+    {
+        if (expected.TryGetProperty("types", out var types) && types.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var typeProp in types.EnumerateObject())
+            {
+                Assert.True(schema.Types.ContainsKey(typeProp.Name),
+                    $"[{suiteName}/{testId}] expected type '{typeProp.Name}' not found");
+                var fieldNames = schema.Types[typeProp.Name].SchemaFields.Select(f => f.Name).ToHashSet();
+                if (typeProp.Value.TryGetProperty("fields", out var typeFields)
+                    && typeFields.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var fieldProp in typeFields.EnumerateObject())
+                        Assert.True(fieldNames.Contains(fieldProp.Name),
+                            $"[{suiteName}/{testId}] type '{typeProp.Name}' missing field '{fieldProp.Name}'");
+                }
+            }
+        }
+
+        if (expected.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var fieldProp in fields.EnumerateObject())
+                Assert.True(schema.Fields.ContainsKey(fieldProp.Name),
+                    $"[{suiteName}/{testId}] expected root field '{fieldProp.Name}' not found");
         }
     }
 }

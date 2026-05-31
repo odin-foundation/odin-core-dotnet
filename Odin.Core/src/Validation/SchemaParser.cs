@@ -58,6 +58,12 @@ namespace Odin.Core.Validation
             private int? _currentArrayMax;
             private bool _currentArrayUnique;
 
+            // Relative-header context: last absolute header, plus the sub-path of the
+            // current relative header within its parent ({.term} -> "term").
+            private string _previousHeaderPath = "";
+            private string _previousHeaderType = "";
+            private string _currentTypeSubPath = "";
+
             public void Parse(string input)
             {
                 var lines = input.Split(LineSeparators, StringSplitOptions.None);
@@ -223,8 +229,36 @@ namespace Odin.Core.Validation
                 {
                     _currentContext = ParserContext.Metadata;
                     _currentSectionPath = "";
+                    _currentTypeSubPath = "";
                     return;
                 }
+
+                // Relative header ({.sub}): nest under the last absolute context.
+                if (inner.Length > 0 && inner[0] == '.')
+                {
+                    var sub = inner.Substring(1).Trim();
+                    if (_previousHeaderType.Length > 0)
+                    {
+                        // Re-open the parent type; fields route under the sub-path.
+                        _currentContext = ParserContext.TypeDef;
+                        _currentTypeName = _previousHeaderType;
+                        _currentTypeFields = new List<SchemaField>();
+                        _currentTypeParents = new List<string>();
+                        _currentTypeSubPath = sub;
+                    }
+                    else
+                    {
+                        // Object context: relative headers nest under the last absolute path.
+                        _currentContext = ParserContext.Section;
+                        _currentSectionPath = _previousHeaderPath.Length > 0
+                            ? _previousHeaderPath + "." + sub
+                            : sub;
+                        _currentTypeSubPath = "";
+                    }
+                    return;
+                }
+
+                _currentTypeSubPath = "";
 
                 if (inner.Length > 0 && inner[0] == '@')
                 {
@@ -234,6 +268,8 @@ namespace Odin.Core.Validation
                     _currentTypeName = typeName;
                     _currentTypeFields = new List<SchemaField>();
                     _currentTypeParents = new List<string>();
+                    _previousHeaderType = typeName;
+                    _previousHeaderPath = "";
                     return;
                 }
 
@@ -242,12 +278,16 @@ namespace Odin.Core.Validation
                     var path = inner.Substring(0, inner.Length - 2).Trim();
                     _currentContext = ParserContext.ArrayDef;
                     _currentSectionPath = path;
+                    _previousHeaderPath = path;
+                    _previousHeaderType = "";
                     return;
                 }
 
                 // Regular section: {path}
                 _currentContext = ParserContext.Section;
                 _currentSectionPath = inner;
+                _previousHeaderPath = inner;
+                _previousHeaderType = "";
             }
 
             private void ParseStandaloneType(string line)
@@ -402,6 +442,9 @@ namespace Odin.Core.Validation
                         var fieldName = key;
                         if (fieldName.EndsWith("[]", StringComparison.Ordinal))
                             fieldName = fieldName.Substring(0, fieldName.Length - 2).Trim();
+                        // Inside a relative sub-section ({.term}), prefix the field name.
+                        if (_currentTypeSubPath.Length > 0)
+                            fieldName = _currentTypeSubPath + "." + fieldName;
                         var field = ParseFieldDef(fieldName, value);
                         _currentTypeFields.Add(field);
                         break;
