@@ -173,10 +173,16 @@ namespace Odin.Core.Transform
         {
             var format = GetMetaString(doc, "target.format") ?? "";
             var options = new Dictionary<string, string>();
+            var namespaces = new Dictionary<string, string>();
 
             foreach (var entry in doc.Metadata)
             {
-                if (entry.Key.StartsWith("target.", StringComparison.Ordinal))
+                if (entry.Key.StartsWith("target.namespace.", StringComparison.Ordinal))
+                {
+                    var rest = entry.Key.Substring("target.namespace.".Length);
+                    namespaces[rest] = OdinValueToString(entry.Value);
+                }
+                else if (entry.Key.StartsWith("target.", StringComparison.Ordinal))
                 {
                     var rest = entry.Key.Substring("target.".Length);
                     if (rest != "format")
@@ -186,7 +192,7 @@ namespace Odin.Core.Transform
                 }
             }
 
-            return new TargetConfig { Format = format, Options = options };
+            return new TargetConfig { Format = format, Options = options, Namespaces = namespaces };
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -459,6 +465,7 @@ namespace Odin.Core.Transform
             List<OdinDirective> directives)
         {
             bool hasConf = false, hasReq = false, hasDep = false, hasAttr = false;
+            string? nsPrefix = null;
             for (int i = 0; i < directives.Count; i++)
             {
                 switch (directives[i].Name)
@@ -467,16 +474,18 @@ namespace Odin.Core.Transform
                     case "required": hasReq = true; break;
                     case "deprecated": hasDep = true; break;
                     case "attr": hasAttr = true; break;
+                    case "ns": nsPrefix = directives[i].Value?.AsString(); break;
                 }
             }
 
-            if (!hasConf && !hasReq && !hasDep && !hasAttr)
+            if (!hasConf && !hasReq && !hasDep && !hasAttr && nsPrefix == null)
                 return modifiers;
 
             bool mReq = modifiers?.Required ?? false;
             bool mConf = modifiers?.Confidential ?? false;
             bool mDep = modifiers?.Deprecated ?? false;
             bool mAttr = modifiers?.Attr ?? false;
+            string? mNs = modifiers?.Ns;
 
             return new OdinModifiers
             {
@@ -484,6 +493,7 @@ namespace Odin.Core.Transform
                 Confidential = mConf || hasConf,
                 Deprecated = mDep || hasDep,
                 Attr = mAttr || hasAttr,
+                Ns = nsPrefix ?? mNs,
             };
         }
 
@@ -1118,7 +1128,7 @@ namespace Odin.Core.Transform
                 case "decimals": case "currencyCode":
                 case "leftPad": case "rightPad": case "truncate": case "default":
                 case "upper": case "lower":
-                case "required": case "confidential": case "deprecated": case "attr":
+                case "required": case "confidential": case "deprecated": case "attr": case "ns":
                     recognized = true;
                     break;
                 default:
@@ -1136,6 +1146,7 @@ namespace Odin.Core.Transform
             {
                 case "pos": case "len": case "field": case "type": case "decimals":
                 case "currencyCode": case "leftPad": case "rightPad": case "default":
+                case "ns":
                     needsValue = true;
                     break;
                 default:

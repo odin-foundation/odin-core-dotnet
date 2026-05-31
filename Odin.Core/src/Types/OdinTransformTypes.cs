@@ -140,6 +140,9 @@ namespace Odin.Core.Types
 
         /// <summary>Format-specific options (e.g., indent, rootElement, includeHeader).</summary>
         public Dictionary<string, string> Options { get; set; } = new Dictionary<string, string>();
+
+        /// <summary>XML namespace prefix-to-URI mappings, in declaration order.</summary>
+        public Dictionary<string, string> Namespaces { get; set; } = new Dictionary<string, string>();
     }
 
     /// <summary>

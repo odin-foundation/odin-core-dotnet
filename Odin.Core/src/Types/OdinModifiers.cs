@@ -20,8 +20,11 @@ public sealed class OdinModifiers
     /// <summary>Emit as XML attribute instead of child element (:attr modifier).</summary>
     public bool Attr { get; init; }
 
+    /// <summary>XML namespace prefix for the output element (:ns &lt;prefix&gt; modifier).</summary>
+    public string? Ns { get; init; }
+
     /// <summary>Returns true if no modifiers are set.</summary>
-    public bool IsEmpty => !Required && !Confidential && !Deprecated && !Attr;
+    public bool IsEmpty => !Required && !Confidential && !Deprecated && !Attr && Ns == null;
 
     /// <summary>Returns true if any modifier is set.</summary>
     public bool HasAny => !IsEmpty;
@@ -35,9 +38,10 @@ public sealed class OdinModifiers
         Required == other.Required &&
         Confidential == other.Confidential &&
         Deprecated == other.Deprecated &&
-        Attr == other.Attr;
+        Attr == other.Attr &&
+        Ns == other.Ns;
 
     /// <inheritdoc/>
     public override int GetHashCode() =>
-        HashCode.Combine(Required, Confidential, Deprecated, Attr);
+        HashCode.Combine(Required, Confidential, Deprecated, Attr, Ns);
 }

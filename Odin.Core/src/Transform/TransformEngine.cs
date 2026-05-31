@@ -317,7 +317,7 @@ namespace Odin.Core.Transform
 
             // 5. Format the output
             string formatted = FormatOutput(output, transform.Target.Format, transform.Target.Options,
-                transform.Segments, ctx.FieldModifiers);
+                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces);
 
             return new TransformResult
             {
@@ -537,7 +537,7 @@ namespace Odin.Core.Transform
             }
 
             string formatted = FormatOutput(output, transform.Target.Format, transform.Target.Options,
-                transform.Segments, ctx.FieldModifiers);
+                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces);
 
             return new TransformResult
             {
@@ -1802,13 +1802,19 @@ namespace Odin.Core.Transform
 
         private static string FormatOutput(
             DynValue output, string targetFormat, Dictionary<string, string> options,
-            List<TransformSegment> segments, Dictionary<string, OdinModifiers> modifiers)
+            List<TransformSegment> segments, Dictionary<string, OdinModifiers> modifiers,
+            Dictionary<string, string>? namespaces = null)
         {
             if (OutputFormatter != null)
                 return OutputFormatter(output, targetFormat, options, modifiers);
 
             // Dispatch to built-in formatters
-            var config = new TargetConfig { Format = targetFormat, Options = new Dictionary<string, string>(options) };
+            var config = new TargetConfig
+            {
+                Format = targetFormat,
+                Options = new Dictionary<string, string>(options),
+                Namespaces = namespaces != null ? new Dictionary<string, string>(namespaces) : new Dictionary<string, string>(),
+            };
 
             switch (targetFormat.ToLowerInvariant())
             {

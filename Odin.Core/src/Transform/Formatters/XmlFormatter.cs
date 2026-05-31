@@ -25,12 +25,18 @@ namespace Odin.Core.Transform
 
             int indent = 2;
             bool declaration = true;
+            bool emitTypeHints = true;
+            IReadOnlyDictionary<string, string>? namespaces = null;
             if (config != null)
             {
                 if (config.Options.TryGetValue("indent", out var indentStr))
                     int.TryParse(indentStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out indent);
                 if (config.Options.TryGetValue("declaration", out var declVal))
                     declaration = declVal != "false";
+                if (config.Options.TryGetValue("emitTypeHints", out var hintsVal))
+                    emitTypeHints = hintsVal != "false";
+                if (config.Namespaces.Count > 0)
+                    namespaces = config.Namespaces;
             }
 
             var sb = new StringBuilder();
@@ -44,12 +50,13 @@ namespace Odin.Core.Transform
                 string rootEl = "root";
                 if (config != null && config.Options.TryGetValue("rootElement", out var re) && !string.IsNullOrEmpty(re))
                     rootEl = re;
-                WriteElement(sb, rootEl, value, indent, 0, modifiers, "", false);
+                WriteElement(sb, rootEl, value, indent, 0, modifiers, "", false, emitTypeHints);
                 return sb.ToString();
             }
 
             // Check if any values have types that need odin namespace
-            bool needsNamespace = HasTypedValues(value);
+            bool needsNamespace = emitTypeHints && HasTypedValues(value);
+            string nsDecls = BuildNamespaceDeclarations(namespaces);
 
             // Multi-root: each top-level key is its own root element
             for (int i = 0; i < entries.Count; i++)
@@ -65,18 +72,19 @@ namespace Odin.Core.Transform
                     {
                         for (int j = 0; j < items.Count; j++)
                         {
-                            WriteArrayItemElement(sb, key, items[j], indent, 0, modifiers, key);
+                            WriteArrayItemElement(sb, key, items[j], indent, 0, modifiers, key, emitTypeHints);
                         }
                     }
                 }
                 else
                 {
-                    // Object section: single root element with namespace
+                    // Object section: single root element with namespace declarations
                     sb.Append('<').Append(key);
                     if (needsNamespace)
                         sb.Append(" xmlns:odin=\"https://odin.foundation/ns\"");
+                    sb.Append(nsDecls);
                     sb.Append(">\n");
-                    WriteObjectChildren(sb, child, indent, 1, modifiers, key);
+                    WriteObjectChildren(sb, child, indent, 1, modifiers, key, emitTypeHints);
                     sb.Append("</").Append(key).Append(">\n");
                 }
             }
@@ -93,7 +101,7 @@ namespace Odin.Core.Transform
         }
 
         private static void WriteArrayItemElement(StringBuilder sb, string tag, DynValue item,
-            int indent, int depth, Dictionary<string, OdinModifiers> modifiers, string pathPrefix)
+            int indent, int depth, Dictionary<string, OdinModifiers> modifiers, string pathPrefix, bool emitTypeHints)
         {
             var pad = Pad(indent, depth);
 
@@ -127,19 +135,19 @@ namespace Odin.Core.Transform
                 for (int i = 0; i < childFields.Count; i++)
                 {
                     WriteElement(sb, childFields[i].Key, childFields[i].Value, indent, depth + 1,
-                        modifiers, pathPrefix + "." + childFields[i].Key, true);
+                        modifiers, pathPrefix + "." + childFields[i].Key, true, emitTypeHints);
                 }
 
                 sb.Append(pad).Append("</").Append(tag).Append(">\n");
             }
             else
             {
-                WriteElement(sb, tag, item, indent, depth, modifiers, pathPrefix, true);
+                WriteElement(sb, tag, item, indent, depth, modifiers, pathPrefix, true, emitTypeHints);
             }
         }
 
         private static void WriteObjectChildren(StringBuilder sb, DynValue value, int indent, int depth,
-            Dictionary<string, OdinModifiers> modifiers, string pathPrefix)
+            Dictionary<string, OdinModifiers> modifiers, string pathPrefix, bool emitTypeHints)
         {
             var entries = value.AsObject();
             if (entries == null) return;
@@ -147,19 +155,25 @@ namespace Odin.Core.Transform
             for (int i = 0; i < entries.Count; i++)
             {
                 string childPath = pathPrefix + "." + entries[i].Key;
-                WriteElement(sb, entries[i].Key, entries[i].Value, indent, depth, modifiers, childPath, true);
+                WriteElement(sb, entries[i].Key, entries[i].Value, indent, depth, modifiers, childPath, true, emitTypeHints);
             }
         }
 
         private static void WriteElement(StringBuilder sb, string tag, DynValue value, int indent, int depth,
-            Dictionary<string, OdinModifiers> modifiers, string modKey, bool includeTypeAttr)
+            Dictionary<string, OdinModifiers> modifiers, string modKey, bool includeTypeAttr, bool emitTypeHints)
         {
             var pad = Pad(indent, depth);
+
+            // Qualify element name with its :ns prefix when present
+            modifiers.TryGetValue(modKey, out var elementMods);
+            string qtag = (elementMods != null && elementMods.Ns != null) ? elementMods.Ns + ":" + tag : tag;
 
             switch (value.Type)
             {
                 case DynValueType.Null:
-                    sb.Append(pad).Append('<').Append(tag).Append(" odin:type=\"null\"></").Append(tag).Append(">\n");
+                    sb.Append(pad).Append('<').Append(qtag);
+                    if (emitTypeHints) sb.Append(" odin:type=\"null\"");
+                    sb.Append("></").Append(qtag).Append(">\n");
                     break;
 
                 case DynValueType.Array:
@@ -168,45 +182,63 @@ namespace Odin.Core.Transform
                     if (items != null)
                     {
                         for (int i = 0; i < items.Count; i++)
-                            WriteArrayItemElement(sb, tag, items[i], indent, depth, modifiers, modKey);
+                            WriteArrayItemElement(sb, qtag, items[i], indent, depth, modifiers, modKey, emitTypeHints);
                     }
                     break;
                 }
 
                 case DynValueType.Object:
                 {
-                    sb.Append(pad).Append('<').Append(tag).Append(">\n");
-                    WriteObjectChildren(sb, value, indent, depth + 1, modifiers, modKey);
-                    sb.Append(pad).Append("</").Append(tag).Append(">\n");
+                    sb.Append(pad).Append('<').Append(qtag).Append(">\n");
+                    WriteObjectChildren(sb, value, indent, depth + 1, modifiers, modKey, emitTypeHints);
+                    sb.Append(pad).Append("</").Append(qtag).Append(">\n");
                     break;
                 }
 
                 default:
                 {
-                    sb.Append(pad).Append('<').Append(tag);
+                    sb.Append(pad).Append('<').Append(qtag);
 
                     // Type attribute
-                    if (includeTypeAttr)
+                    if (includeTypeAttr && emitTypeHints)
                     {
                         string? typeAttr = GetTypeAttribute(value);
                         if (typeAttr != null)
                             sb.Append(" odin:type=\"").Append(typeAttr).Append('"');
+
+                        // Emit currencyCode when the value carries a code
+                        string? code = value.GetCurrencyCode();
+                        if (!string.IsNullOrEmpty(code))
+                            sb.Append(" odin:currencyCode=\"").Append(XmlEscape(code!)).Append('"');
                     }
 
                     // Modifier attributes
-                    if (modifiers.TryGetValue(modKey, out var mods))
+                    if (emitTypeHints && elementMods != null)
                     {
-                        if (mods.Required) sb.Append(" odin:required=\"true\"");
-                        if (mods.Confidential) sb.Append(" odin:confidential=\"true\"");
-                        if (mods.Deprecated) sb.Append(" odin:deprecated=\"true\"");
+                        if (elementMods.Required) sb.Append(" odin:required=\"true\"");
+                        if (elementMods.Confidential) sb.Append(" odin:confidential=\"true\"");
+                        if (elementMods.Deprecated) sb.Append(" odin:deprecated=\"true\"");
                     }
 
                     sb.Append('>');
                     sb.Append(XmlEscape(ScalarToString(value)));
-                    sb.Append("</").Append(tag).Append(">\n");
+                    sb.Append("</").Append(qtag).Append(">\n");
                     break;
                 }
             }
+        }
+
+        // Build xmlns:&lt;prefix&gt; declarations for target namespaces in declaration order.
+        private static string BuildNamespaceDeclarations(IReadOnlyDictionary<string, string>? namespaces)
+        {
+            if (namespaces == null || namespaces.Count == 0) return "";
+            var sb = new StringBuilder();
+            foreach (var kv in namespaces)
+            {
+                sb.Append(" xmlns:").Append(kv.Key).Append("=\"");
+                sb.Append(XmlEscape(kv.Value)).Append('"');
+            }
+            return sb.ToString();
         }
 
         private static string? GetTypeAttribute(DynValue value)
@@ -221,13 +253,8 @@ namespace Odin.Core.Transform
                     return "number";
                 case DynValueType.Currency:
                 case DynValueType.CurrencyRaw:
-                {
-                    // Whole-number currencies → integer, fractional → number
-                    double d = value.AsDouble() ?? 0.0;
-                    if (d == Math.Floor(d) && !double.IsInfinity(d))
-                        return "integer";
-                    return "number";
-                }
+                    // Currency is first-class: always "currency", regardless of code presence.
+                    return "currency";
                 case DynValueType.Percent:
                 case DynValueType.FloatRaw:
                     return "number";
@@ -280,7 +307,10 @@ namespace Odin.Core.Transform
                 case DynValueType.Percent:
                     return FormatFloat(value.AsDouble() ?? 0.0);
                 case DynValueType.Currency:
-                    return FormatFloat(value.AsDouble() ?? 0.0);
+                    // Render at the value's decimal scale to preserve precision.
+                    return (value.AsDouble() ?? 0.0).ToString(
+                        "F" + value.GetDecimalPlaces().ToString(CultureInfo.InvariantCulture),
+                        CultureInfo.InvariantCulture);
                 case DynValueType.FloatRaw:
                 case DynValueType.CurrencyRaw:
                     return value.AsString() ?? "0";
