@@ -619,8 +619,13 @@ namespace Odin.Core.Validation
             }
             else if (rest.Length > 0 && rest[0] == '#' && !rest.StartsWith("#(", StringComparison.Ordinal))
             {
-                fieldType = SchemaFieldType.Number();
                 rest = rest.Substring(1);
+                // Decimal precision: #.N fixes the number of fractional places.
+                byte? decimalPlaces = TakeDecimalPlaces(ref rest);
+                fieldType = decimalPlaces.HasValue
+                    ? SchemaFieldType.Decimal(decimalPlaces.Value)
+                    : SchemaFieldType.Number();
+                rest = rest.TrimStart();
                 defaultRaw = TakeNumericDefault(ref rest);
                 rest = rest.TrimStart();
                 if (defaultRaw.Length > 0 &&
@@ -631,6 +636,31 @@ namespace Odin.Core.Validation
             {
                 fieldType = SchemaFieldType.Boolean();
                 rest = rest.Substring(1).TrimStart();
+            }
+            else if (rest.Length > 0 && rest[0] == '^')
+            {
+                // Binary: ^, ^algo, ^:(N), ^algo:(N) — (N) fixes the exact byte length.
+                fieldType = SchemaFieldType.Binary();
+                rest = rest.Substring(1);
+                // Skip an optional algorithm tag (e.g. sha256) up to the colon or size paren.
+                int ti = 0;
+                while (ti < rest.Length && rest[ti] != ':' && rest[ti] != '(' && !char.IsWhiteSpace(rest[ti]))
+                    ti++;
+                rest = rest.Substring(ti);
+                if (rest.Length > 0 && rest[0] == ':')
+                    rest = rest.Substring(1);
+                if (rest.Length > 0 && rest[0] == '(')
+                {
+                    int parenEnd = rest.IndexOf(')');
+                    if (parenEnd >= 0)
+                    {
+                        var inner = rest.Substring(1, parenEnd - 1).Trim();
+                        if (long.TryParse(inner, NumberStyles.Integer, CultureInfo.InvariantCulture, out var size))
+                            constraints.Add(SchemaConstraint.Size(size, size));
+                        rest = rest.Substring(parenEnd + 1);
+                    }
+                }
+                rest = rest.TrimStart();
             }
             else if (rest == "~")
             {
@@ -965,6 +995,25 @@ namespace Odin.Core.Validation
                 Constraints = constraints,
                 Conditionals = conditionals,
             };
+        }
+
+        /// <summary>
+        /// Consume a leading <c>.N</c> decimal-precision suffix (the fixed fractional
+        /// place count of a <c>#.N</c> type), returning N and advancing <paramref name="rest"/>.
+        /// </summary>
+        private static byte? TakeDecimalPlaces(ref string rest)
+        {
+            if (rest.Length < 2 || rest[0] != '.' || !char.IsDigit(rest[1]))
+                return null;
+            int i = 1;
+            while (i < rest.Length && char.IsDigit(rest[i]))
+                i++;
+            if (byte.TryParse(rest.Substring(1, i - 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out var places))
+            {
+                rest = rest.Substring(i);
+                return places;
+            }
+            return null;
         }
 
         /// <summary>

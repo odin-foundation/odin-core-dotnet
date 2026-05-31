@@ -130,6 +130,10 @@ namespace Odin.Core.Validation
         {
             var value = doc.Get(path);
 
+            // Computed fields are produced downstream, not supplied as input.
+            if (value == null && field.Computed)
+                return;
+
             // Required check (V001 / V010)
             if (field.Required && value == null)
             {
@@ -198,6 +202,24 @@ namespace Odin.Core.Validation
                     Actual = ValueTypeName(value),
                 });
                 return;
+            }
+
+            // Decimal precision (#.N): enforce exactly N fractional places (V003).
+            if (field.FieldType is DecimalFieldType decimalType && decimalType.DecimalPlaces.HasValue
+                && value is OdinNumber numValue)
+            {
+                var raw = numValue.Raw ?? numValue.Value.ToString(CultureInfo.InvariantCulture);
+                int dot = raw.IndexOf('.');
+                int actualPlaces = dot < 0 ? 0 : raw.Length - dot - 1;
+                if (actualPlaces != decimalType.DecimalPlaces.Value)
+                {
+                    errors.Add(new ValidationError(
+                        ValidationErrorCode.ValueOutOfBounds,
+                        path,
+                        string.Format(CultureInfo.InvariantCulture,
+                            "Decimal places mismatch: expected exactly {0}, got {1}",
+                            decimalType.DecimalPlaces.Value, actualPlaces)));
+                }
             }
 
             // Constraint validation

@@ -146,16 +146,16 @@ public static class Stringify
     }
 
     /// <summary>
-    /// Write modifier prefixes in canonical order: ! (required), * (confidential), - (deprecated).
+    /// Write modifier prefixes in canonical order: ! (required), - (deprecated), * (confidential).
     /// </summary>
     internal static void WriteModifiers(StringBuilder sb, OdinModifiers mods)
     {
         if (mods.Required)
             sb.Append('!');
-        if (mods.Confidential)
-            sb.Append('*');
         if (mods.Deprecated)
             sb.Append('-');
+        if (mods.Confidential)
+            sb.Append('*');
     }
 
     /// <summary>
@@ -191,7 +191,10 @@ public static class Stringify
                 sb.Append('#');
                 if (canonical)
                 {
-                    sb.Append(FormatCanonicalNumber(n.Value));
+                    // Prefer raw to preserve precision beyond double range
+                    sb.Append(n.Raw != null
+                        ? FormatCanonicalNumber(n.Raw)
+                        : FormatCanonicalNumber(n.Value));
                 }
                 else if (n.Raw != null)
                 {
@@ -211,8 +214,7 @@ public static class Stringify
                 sb.Append("#$");
                 if (canonical)
                 {
-                    int dp = Math.Max((int)c.DecimalPlaces, 2);
-                    sb.Append(c.Value.ToString("F" + dp, CultureInfo.InvariantCulture));
+                    sb.Append(FormatCanonicalCurrency(c));
                     if (c.CurrencyCode != null)
                     {
                         sb.Append(':');
@@ -422,13 +424,45 @@ public static class Stringify
         {
             return ((long)value).ToString(CultureInfo.InvariantCulture);
         }
-        string s = value.ToString("R", CultureInfo.InvariantCulture);
-        // If it has a decimal point, strip trailing zeros
+        return FormatCanonicalNumber(value.ToString("R", CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Format a numeric string for canonical output: strip trailing zeros.
+    /// </summary>
+    private static string FormatCanonicalNumber(string s)
+    {
         if (s.IndexOf('.') >= 0 && s.IndexOf('E') < 0 && s.IndexOf('e') < 0)
         {
             s = s.TrimEnd('0').TrimEnd('.');
         }
         return s;
+    }
+
+    /// <summary>
+    /// Format a currency value for canonical output: at least 2 decimal places.
+    /// Prefers raw to preserve precision and integer parts beyond double range.
+    /// </summary>
+    private static string FormatCanonicalCurrency(OdinCurrency c)
+    {
+        if (c.Raw != null)
+        {
+            // Raw may carry a trailing :CODE — the numeric part precedes the colon
+            string raw = c.Raw;
+            int colonPos = raw.IndexOf(':');
+            if (colonPos >= 0)
+                raw = raw.Substring(0, colonPos);
+
+            bool negative = raw.StartsWith("-", StringComparison.Ordinal);
+            string unsigned = negative ? raw.Substring(1) : raw;
+            int dotIndex = unsigned.IndexOf('.');
+            string intPart = dotIndex < 0 ? unsigned : unsigned.Substring(0, dotIndex);
+            string fracPart = dotIndex < 0 ? "" : unsigned.Substring(dotIndex + 1);
+            string paddedFrac = fracPart.Length < 2 ? fracPart.PadRight(2, '0') : fracPart;
+            return (negative ? "-" : "") + intPart + "." + paddedFrac;
+        }
+        int dp = Math.Max((int)c.DecimalPlaces, 2);
+        return c.Value.ToString("F" + dp, CultureInfo.InvariantCulture);
     }
 
     /// <summary>

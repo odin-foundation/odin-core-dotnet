@@ -36,6 +36,12 @@ namespace Odin.Core.Transform
 
         /// <summary>Errors collected by verbs (T011, etc.) — merged into TransformResult.errors.</summary>
         public List<TransformError> Errors { get; set; } = new List<TransformError>();
+
+        /// <summary>Warnings collected by verbs — merged into TransformResult.warnings.</summary>
+        public List<TransformWarning> Warnings { get; set; } = new List<TransformWarning>();
+
+        /// <summary>Missing-data policy for lookup misses (fail/warn/skip/default; default silent null).</summary>
+        public string? OnMissing { get; set; }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -995,12 +1001,20 @@ namespace Odin.Core.Transform
                 if (unlessDir != null && EvaluateFieldCondition(unlessDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot))
                     return;
 
+                // A :default rescues a missing lookup; suppress errors raised during evaluation.
+                bool hasDefaultModifier = FindDirective(mapping.Directives, "default") != null;
+                int errorsBefore = hasDefaultModifier ? ctx.Errors.Count : 0;
+
                 DynValue val;
                 var objectDir = FindDirective(mapping.Directives, "object");
                 if (objectDir != null)
                     val = BuildInlineObject(objectDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot);
                 else
                     val = EvaluateExpression(mapping.Expression, ctx, currentSource, outputSnapshot);
+
+                // If a :default rescued a null result, drop errors raised during evaluation.
+                if (hasDefaultModifier && ctx.Errors.Count > errorsBefore)
+                    ctx.Errors.RemoveRange(errorsBefore, ctx.Errors.Count - errorsBefore);
 
                 val = ApplyMappingDirectives(val, mapping.Directives, ctx.SourceFormat, mapping.Expression);
 
@@ -1034,12 +1048,37 @@ namespace Odin.Core.Transform
             }
             catch (Exception e)
             {
-                ctx.Errors.Add(new TransformError
-                {
-                    Message = $"mapping '{mapping.Target}': {e.Message}",
-                    Path = mapping.Target,
-                });
+                // onError policy defaults to 'fail' — surface verb/transform errors.
+                var onError = OnErrorPolicy(ctx);
+                if (onError == "warn")
+                    ctx.Warnings.Add(new TransformWarning
+                    {
+                        Message = $"mapping '{mapping.Target}': {e.Message}",
+                        Path = mapping.Target,
+                    });
+                else if (onError != "skip")
+                    ctx.Errors.Add(new TransformError
+                    {
+                        Message = $"mapping '{mapping.Target}': {e.Message}",
+                        Path = mapping.Target,
+                    });
             }
+        }
+
+        /// <summary>Resolve the onError policy (fail/warn/skip), defaulting to 'fail'.</summary>
+        private static string OnErrorPolicy(ExecContext ctx)
+        {
+            if (ctx.Target != null && ctx.Target.Options.TryGetValue("onError", out var p) && p.Length > 0)
+                return p;
+            return "fail";
+        }
+
+        /// <summary>Resolve the onMissing policy (fail/warn/skip/default), or null for silent null.</summary>
+        private static string? OnMissingPolicy(ExecContext ctx)
+        {
+            if (ctx.Target != null && ctx.Target.Options.TryGetValue("onMissing", out var p) && p.Length > 0)
+                return p;
+            return null;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1441,13 +1480,16 @@ namespace Odin.Core.Transform
                 Accumulators = new Dictionary<string, DynValue>(ctx.Accumulators),
                 Tables = ctx.Tables,
                 GlobalOutput = ctx.GlobalOutput,
+                OnMissing = OnMissingPolicy(ctx),
             };
 
             var result = verbFn(evaluatedArgs, verbCtx);
 
-            // Merge verb-level errors (T011, etc.) into engine errors
+            // Merge verb-level errors (T011, etc.) and warnings into engine results
             if (verbCtx.Errors.Count > 0)
                 ctx.Errors.AddRange(verbCtx.Errors);
+            if (verbCtx.Warnings.Count > 0)
+                ctx.Warnings.AddRange(verbCtx.Warnings);
 
             // accumulate / set: update context accumulators
             if ((call.Verb == "accumulate" || call.Verb == "set") && evaluatedArgs.Length > 0)

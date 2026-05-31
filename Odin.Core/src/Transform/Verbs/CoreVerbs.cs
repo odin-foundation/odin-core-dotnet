@@ -204,7 +204,35 @@ internal static class CoreVerbs
         if (ctx.Tables.TryGetValue(tableName, out var table) && table.Default != null)
             return table.Default;
 
+        // Miss: report via the onMissing policy (default silent null).
+        ReportLookupMiss(ctx, tableName, FormatMatchKey(keys));
         return DynValue.Null();
+    }
+
+    /// <summary>
+    /// Report a lookup miss honoring the onMissing policy.
+    /// Defaults to silent null; raises only when onMissing is fail/warn.
+    /// </summary>
+    private static void ReportLookupMiss(VerbContext ctx, string tableName, string key)
+    {
+        var message = string.Format(CultureInfo.InvariantCulture,
+            "Lookup key not found in table '{0}': {1}", tableName, key);
+        if (ctx.OnMissing == "fail")
+            ctx.Errors.Add(new TransformError
+            {
+                Code = TransformErrorCode.LookupKeyNotFound.Code(),
+                Message = message,
+            });
+        else if (ctx.OnMissing == "warn")
+            ctx.Warnings.Add(new TransformWarning { Message = message });
+    }
+
+    private static string FormatMatchKey(DynValue[] keys)
+    {
+        var parts = new string[keys.Length];
+        for (int i = 0; i < keys.Length; i++)
+            parts[i] = VerbHelpers.CoerceStr(keys[i]);
+        return string.Join(", ", parts);
     }
 
     /// <summary>
