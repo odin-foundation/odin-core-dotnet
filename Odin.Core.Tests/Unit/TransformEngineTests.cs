@@ -945,6 +945,110 @@ public class TransformEngineTests
     }
 
     // ─────────────────────────────────────────────────────────────────
+    // Boolean operators (and / or / not)
+    // ─────────────────────────────────────────────────────────────────
+
+    private static OdinTransform CondTransform(string condition) => new OdinTransform
+    {
+        Target = new TargetConfig { Format = "json" },
+        Segments = new List<TransformSegment>
+        {
+            new TransformSegment
+            {
+                Condition = condition,
+                Mappings = new List<FieldMapping>
+                {
+                    new FieldMapping { Target = "X", Expression = FieldExpression.Literal(new OdinString("ok")) }
+                }
+            }
+        }
+    };
+
+    private static bool CondIncluded(string condition, DynValue source)
+    {
+        var result = TransformEngine.Execute(CondTransform(condition), source);
+        Assert.True(result.Success);
+        var x = result.Output!.Get("X");
+        return x != null && !x.IsNull;
+    }
+
+    [Fact]
+    public void ConditionAndBothTrueIncludes()
+    {
+        Assert.True(CondIncluded("@.a = 1 and @.b = 2", Obj(("a", Int(1)), ("b", Int(2)))));
+    }
+
+    [Fact]
+    public void ConditionAndOneFalseExcludes()
+    {
+        Assert.False(CondIncluded("@.a = 1 and @.b = 2", Obj(("a", Int(1)), ("b", Int(99)))));
+    }
+
+    [Fact]
+    public void ConditionOrOneTrueIncludes()
+    {
+        Assert.True(CondIncluded("@.a = 1 or @.b = 2", Obj(("a", Int(0)), ("b", Int(2)))));
+    }
+
+    [Fact]
+    public void ConditionOrBothFalseExcludes()
+    {
+        Assert.False(CondIncluded("@.a = 1 or @.b = 2", Obj(("a", Int(0)), ("b", Int(0)))));
+    }
+
+    [Fact]
+    public void ConditionNotTruthyNegates()
+    {
+        Assert.False(CondIncluded("not @.active", Obj(("active", Bln(true)))));
+        Assert.True(CondIncluded("not @.active", Obj(("active", Bln(false)))));
+    }
+
+    [Fact]
+    public void ConditionNotComparisonNegates()
+    {
+        Assert.True(CondIncluded("not @.status = 'void'", Obj(("status", Str("active")))));
+        Assert.False(CondIncluded("not @.status = 'void'", Obj(("status", Str("void")))));
+    }
+
+    [Fact]
+    public void ConditionNotBindsTighterThanAnd()
+    {
+        // Parsed as (not @.a) and @.b
+        Assert.True(CondIncluded("not @.a and @.b", Obj(("a", Bln(false)), ("b", Bln(true)))));
+        Assert.False(CondIncluded("not @.a and @.b", Obj(("a", Bln(true)), ("b", Bln(true)))));
+    }
+
+    [Fact]
+    public void ConditionAndBindsTighterThanOr()
+    {
+        // Parsed as @.a or (@.b and @.c): a true alone includes despite c false
+        Assert.True(CondIncluded("@.a or @.b and @.c",
+            Obj(("a", Bln(true)), ("b", Bln(true)), ("c", Bln(false)))));
+        // a false, b and c both true -> includes
+        Assert.True(CondIncluded("@.a or @.b and @.c",
+            Obj(("a", Bln(false)), ("b", Bln(true)), ("c", Bln(true)))));
+        // a false, b true, c false -> excluded
+        Assert.False(CondIncluded("@.a or @.b and @.c",
+            Obj(("a", Bln(false)), ("b", Bln(true)), ("c", Bln(false)))));
+    }
+
+    [Fact]
+    public void ConditionOperatorWordInsideQuotesNotSplit()
+    {
+        // "and" inside the quoted literal is text, not an operator.
+        Assert.True(CondIncluded("@.label = 'cats and dogs'", Obj(("label", Str("cats and dogs")))));
+        Assert.False(CondIncluded("@.label = 'cats and dogs'", Obj(("label", Str("cats")))));
+    }
+
+    [Fact]
+    public void ConditionOperatorsCaseInsensitive()
+    {
+        Assert.True(CondIncluded("@.a = 1 AND @.b = 2", Obj(("a", Int(1)), ("b", Int(2)))));
+        Assert.True(CondIncluded("@.a = 1 Or @.b = 2", Obj(("a", Int(0)), ("b", Int(2)))));
+        Assert.False(CondIncluded("NOT @.active", Obj(("active", Bln(true)))));
+    }
+
+    // ─────────────────────────────────────────────────────────────────
     // Modifiers
     // ─────────────────────────────────────────────────────────────────
 
