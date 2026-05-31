@@ -133,6 +133,14 @@ public class ParseTests : GoldenTestBase
             var expectedDoc = expected.Documents[i];
             var actualDoc = docs[i];
 
+            if (expectedDoc.Metadata != null)
+            {
+                VerifyMetadata(
+                    actualDoc.Metadata,
+                    expectedDoc.Metadata,
+                    $"[{suiteName}/{test.Id}] doc[{i}]");
+            }
+
             if (expectedDoc.Assignments != null)
             {
                 VerifyAssignments(
@@ -171,6 +179,64 @@ public class ParseTests : GoldenTestBase
             var actualVal = actual[path];
             VerifyValue(actualVal, expectedVal, $"{context} path='{path}'");
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Metadata verification (raw primitive comparison)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static void VerifyMetadata(
+        OrderedMap<string, OdinValue> actual,
+        Dictionary<string, JsonElement> expected,
+        string context)
+    {
+        foreach (var (key, expectedVal) in expected)
+        {
+            Assert.True(
+                actual.ContainsKey(key),
+                $"{context} Missing metadata: '{key}'. Available keys: {string.Join(", ", actual.Keys)}");
+
+            var actualVal = actual[key];
+            var actualRaw = MetadataRawString(actualVal);
+
+            switch (expectedVal.ValueKind)
+            {
+                case JsonValueKind.String:
+                    Assert.Equal(expectedVal.GetString(), actualRaw);
+                    break;
+                case JsonValueKind.True:
+                case JsonValueKind.False:
+                    Assert.Equal(expectedVal.GetBoolean().ToString().ToLowerInvariant(), actualRaw.ToLowerInvariant());
+                    break;
+                case JsonValueKind.Number:
+                    Assert.Equal(
+                        expectedVal.GetRawText(),
+                        actualRaw,
+                        ignoreCase: false);
+                    break;
+                default:
+                    Assert.Equal(expectedVal.GetRawText(), actualRaw);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Render a metadata value as its source/raw string. Dates use raw YYYY-MM-DD.
+    /// </summary>
+    private static string MetadataRawString(OdinValue value)
+    {
+        return value switch
+        {
+            OdinString s => s.Value,
+            OdinDate d => d.Raw,
+            OdinTimestamp t => t.Raw,
+            OdinInteger i => i.Raw ?? i.Value.ToString(CultureInfo.InvariantCulture),
+            OdinNumber n => n.Raw ?? n.Value.ToString(CultureInfo.InvariantCulture),
+            OdinBoolean b => b.Value ? "true" : "false",
+            OdinReference r => "@" + r.Path,
+            _ => value.AsString() ?? string.Empty,
+        };
     }
 
     private static void VerifyValue(OdinValue actual, ExpectedValue expected, string context)

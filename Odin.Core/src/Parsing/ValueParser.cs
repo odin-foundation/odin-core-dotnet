@@ -289,11 +289,27 @@ namespace Odin.Core.Parsing
                     "empty integer after '##'");
             }
 
+            double numeric;
+            if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out numeric))
+            {
+                throw new OdinParseException(
+                    ParseErrorCode.InvalidTypePrefix, line, col,
+                    string.Format(CultureInfo.InvariantCulture, "invalid integer: {0}", raw));
+            }
+
+            // Reject fractional values (e.g. ##4.2); exponent form (e.g. ##1e3) is allowed when integral
+            if (numeric != Math.Truncate(numeric) || double.IsInfinity(numeric) || double.IsNaN(numeric))
+            {
+                throw new OdinParseException(
+                    ParseErrorCode.InvalidTypePrefix, line, col,
+                    string.Format(CultureInfo.InvariantCulture, "Integer (##) value cannot have a fractional part: {0}", raw));
+            }
+
             long value;
             if (!long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
             {
-                // For very large integers, store 0 but preserve raw
-                value = 0;
+                // Large or exponent-form integers: derive from the numeric value, preserve raw
+                value = numeric >= long.MinValue && numeric <= long.MaxValue ? (long)numeric : 0;
             }
 
             return new OdinInteger(value) { Raw = raw };
