@@ -36,6 +36,8 @@ namespace Odin.Core.Validation
     /// </summary>
     public static class FormatValidators
     {
+        private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds(100);
+
         /// <summary>
         /// Validates a string value against a named format.
         /// </summary>
@@ -51,17 +53,33 @@ namespace Odin.Core.Validation
             {
                 case "email": return ValidateEmail(value);
                 case "url": return ValidateUrl(value);
+                case "uri": return ValidateUri(value);
                 case "uuid": return ValidateUuid(value);
                 case "ssn": return ValidateSsn(value);
                 case "vin": return ValidateVin(value);
                 case "phone": return ValidatePhone(value);
                 case "zip": return ValidateZip(value);
+                case "hostname": return ValidateHostname(value);
                 case "ipv4": return ValidateIpv4(value);
                 case "ipv6": return ValidateIpv6(value);
-                case "creditcard": return ValidateCreditCard(value);
+                case "creditcard":
+                case "credit-card": return ValidateCreditCard(value);
                 case "date-iso": return ValidateDateIso(value);
+                case "datetime":
+                case "date-time": return ValidateDatetime(value);
                 case "naic": return ValidateNaic(value);
                 case "fein": return ValidateFein(value);
+                case "iban": return ValidateIban(value);
+                case "bic":
+                case "swift": return ValidateBic(value);
+                case "routing": return ValidateRouting(value);
+                case "cusip": return ValidateCusip(value);
+                case "isin": return ValidateIsin(value);
+                case "lei": return ValidateLei(value);
+                case "npi": return ValidateNpi(value);
+                case "dea": return ValidateDea(value);
+                case "imei": return ValidateImei(value);
+                case "iccid": return ValidateIccid(value);
                 case "currency-code": return ValidateCurrencyCode(value);
                 case "country-alpha2": return ValidateCountryAlpha2(value);
                 case "country-alpha3": return ValidateCountryAlpha3(value);
@@ -107,6 +125,138 @@ namespace Odin.Core.Validation
                 value.StartsWith("https://", StringComparison.Ordinal))
                 return FormatValidationResult.Valid();
             return FormatValidationResult.Error("Invalid URL format");
+        }
+
+        // Matches TS: /^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s]*$/
+        private static readonly Regex UriRegex =
+            new Regex(@"^[a-zA-Z][a-zA-Z0-9+.\-]*:[^\s]*$", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateUri(string value)
+        {
+            return UriRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid URI format");
+        }
+
+        // Matches TS: /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+        private static readonly Regex HostnameRegex =
+            new Regex(@"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
+                RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateHostname(string value)
+        {
+            return HostnameRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid hostname format");
+        }
+
+        // Matches TS: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+        private static readonly Regex DatetimeRegex =
+            new Regex(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateDatetime(string value)
+        {
+            return DatetimeRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid datetime format");
+        }
+
+        // Matches TS: /^[A-Z]{2}\d{2}[A-Z0-9]{4,30}$/i
+        private static readonly Regex IbanRegex =
+            new Regex(@"^[A-Za-z]{2}\d{2}[A-Za-z0-9]{4,30}$", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateIban(string value)
+        {
+            return IbanRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid IBAN format");
+        }
+
+        // Matches TS: /^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/i
+        private static readonly Regex BicRegex =
+            new Regex(@"^[A-Za-z]{4}[A-Za-z]{2}[A-Za-z0-9]{2}([A-Za-z0-9]{3})?$", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateBic(string value)
+        {
+            return BicRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid BIC format");
+        }
+
+        // Matches TS: /^\d{9}$/
+        private static FormatValidationResult ValidateRouting(string value)
+        {
+            return IsAllDigits(value, 9)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid routing number format");
+        }
+
+        // Matches TS: /^[A-Z0-9]{9}$/i
+        private static readonly Regex CusipRegex =
+            new Regex(@"^[A-Za-z0-9]{9}$", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateCusip(string value)
+        {
+            return CusipRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid CUSIP format");
+        }
+
+        // Matches TS: /^[A-Z]{2}[A-Z0-9]{9}\d$/i
+        private static readonly Regex IsinRegex =
+            new Regex(@"^[A-Za-z]{2}[A-Za-z0-9]{9}\d$", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateIsin(string value)
+        {
+            return IsinRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid ISIN format");
+        }
+
+        // Matches TS: /^[A-Z0-9]{20}$/i
+        private static readonly Regex LeiRegex =
+            new Regex(@"^[A-Za-z0-9]{20}$", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateLei(string value)
+        {
+            return LeiRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid LEI format");
+        }
+
+        // Matches TS: /^\d{10}$/
+        private static FormatValidationResult ValidateNpi(string value)
+        {
+            return IsAllDigits(value, 10)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid NPI format");
+        }
+
+        // Matches TS: /^[A-Z]{2}\d{7}$/i
+        private static readonly Regex DeaRegex =
+            new Regex(@"^[A-Za-z]{2}\d{7}$", RegexOptions.None, RegexTimeout);
+
+        private static FormatValidationResult ValidateDea(string value)
+        {
+            return DeaRegex.IsMatch(value)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid DEA format");
+        }
+
+        // Matches TS: /^\d{15}$/
+        private static FormatValidationResult ValidateImei(string value)
+        {
+            return IsAllDigits(value, 15)
+                ? FormatValidationResult.Valid()
+                : FormatValidationResult.Error("Invalid IMEI format");
+        }
+
+        // Matches TS: /^\d{19,20}$/
+        private static FormatValidationResult ValidateIccid(string value)
+        {
+            if ((value.Length == 19 || value.Length == 20) && IsAllDigits(value))
+                return FormatValidationResult.Valid();
+            return FormatValidationResult.Error("Invalid ICCID format");
         }
 
         private static FormatValidationResult ValidateUuid(string value)
@@ -494,6 +644,21 @@ namespace Odin.Core.Validation
         private static bool IsHexDigit(char ch)
         {
             return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+        }
+
+        private static bool IsAllDigits(string value)
+        {
+            if (value.Length == 0) return false;
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] < '0' || value[i] > '9') return false;
+            }
+            return true;
+        }
+
+        private static bool IsAllDigits(string value, int length)
+        {
+            return value.Length == length && IsAllDigits(value);
         }
 
         private static char[] ExtractDigits(string value)
