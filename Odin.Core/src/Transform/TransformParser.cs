@@ -172,6 +172,16 @@ namespace Odin.Core.Transform
         private static TargetConfig ParseTargetConfig(OdinDocument doc)
         {
             var format = GetMetaString(doc, "target.format") ?? "";
+            // Fall back to the target half of the direction header (e.g. "json->csv").
+            if (format.Length == 0)
+            {
+                var direction = GetMetaString(doc, "direction");
+                if (direction != null)
+                {
+                    var parts = direction.Split(new[] { "->" }, StringSplitOptions.None);
+                    if (parts.Length > 1) format = parts[parts.Length - 1].Trim();
+                }
+            }
             var options = new Dictionary<string, string>();
             var namespaces = new Dictionary<string, string>();
 

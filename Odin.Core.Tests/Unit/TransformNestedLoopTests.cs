@@ -136,20 +136,20 @@ cov_index = ""@idx""
     }
 
     [Fact]
-    public void OuterNonArray_YieldsEmptyRows_NoError()
+    public void OuterNonArray_EmitsT009()
     {
         var r = Run(TwoLevel, @"{""vehicles"":""not-an-array""}");
-        Assert.True(r.Success);
-        Assert.Empty(Rows(r));
+        Assert.False(r.Success);
+        Assert.Contains(r.Errors, e => e.Code == "T009");
     }
 
     [Fact]
-    public void InnerNonArray_YieldsEmptyRows_NoError()
+    public void InnerNonArray_EmitsT009()
     {
         var r = Run(TwoLevel,
             @"{""vehicles"":[{""vin"":""A"",""coverages"":""nope""}]}");
-        Assert.True(r.Success);
-        Assert.Empty(Rows(r));
+        Assert.False(r.Success);
+        Assert.Contains(r.Errors, e => e.Code == "T009");
     }
 
     // ─────────────────────────────────────────────────────────────────

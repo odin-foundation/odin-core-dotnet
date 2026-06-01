@@ -198,10 +198,18 @@ internal static class CoreVerbs
         var result = DoTableLookup(tableRef, keys, ctx.Tables);
         if (result != null) return result;
 
-        // Check for table-level default
         var dotIdx = tableRef.IndexOf('.');
         var tableName = dotIdx >= 0 ? tableRef.Substring(0, dotIdx) : tableRef;
-        if (ctx.Tables.TryGetValue(tableName, out var table) && table.Default != null)
+
+        // Undeclared table is T003, distinct from a missing key (T004).
+        if (!ctx.Tables.TryGetValue(tableName, out var table))
+        {
+            ReportTableNotFound(ctx, tableName);
+            return DynValue.Null();
+        }
+
+        // Check for table-level default
+        if (table.Default != null)
             return table.Default;
 
         // Miss: report via the onMissing policy (default silent null).
@@ -224,7 +232,32 @@ internal static class CoreVerbs
                 Message = message,
             });
         else if (ctx.OnMissing == "warn")
-            ctx.Warnings.Add(new TransformWarning { Message = message });
+            ctx.Warnings.Add(new TransformWarning
+            {
+                Code = TransformErrorCode.LookupKeyNotFound.Code(),
+                Message = message,
+            });
+    }
+
+    /// <summary>
+    /// Report a missing lookup table (T003) honoring the onMissing policy.
+    /// Distinct from a missing key (T004): the referenced table was never declared.
+    /// </summary>
+    private static void ReportTableNotFound(VerbContext ctx, string tableName)
+    {
+        var message = "Lookup table not found: " + tableName;
+        if (ctx.OnMissing == "fail")
+            ctx.Errors.Add(new TransformError
+            {
+                Code = TransformErrorCode.LookupTableNotFound.Code(),
+                Message = message,
+            });
+        else if (ctx.OnMissing == "warn")
+            ctx.Warnings.Add(new TransformWarning
+            {
+                Code = TransformErrorCode.LookupTableNotFound.Code(),
+                Message = message,
+            });
     }
 
     private static string FormatMatchKey(DynValue[] keys)

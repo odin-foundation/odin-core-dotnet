@@ -44,6 +44,36 @@ namespace Odin.Core.Transform
         public string? OnMissing { get; set; }
     }
 
+    /// <summary>
+    /// Options controlling transform execution.
+    /// </summary>
+    public sealed class TransformOptions
+    {
+        /// <summary>
+        /// Resolves an @import path to ODIN transform text. Imported lookup tables,
+        /// constants, accumulators, and named segments are merged into the transform
+        /// before execution. Returning null leaves that import unresolved.
+        /// </summary>
+        public Func<string, string?>? ImportResolver { get; set; }
+    }
+
+    /// <summary>
+    /// Carries a stable transform error code thrown during expression or loop
+    /// evaluation. The mapping/segment handlers read <see cref="Error"/> to preserve
+    /// the code instead of collapsing it to a generic transform error.
+    /// </summary>
+    internal sealed class CodedTransformException : Exception
+    {
+        /// <summary>The coded transform error.</summary>
+        public TransformError Error { get; }
+
+        /// <summary>Creates a coded transform exception.</summary>
+        public CodedTransformException(TransformError error) : base(error.Message)
+        {
+            Error = error;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Execution Context (internal)
     // ─────────────────────────────────────────────────────────────────────────
@@ -184,12 +214,22 @@ namespace Odin.Core.Transform
         /// <param name="doc">The source ODIN document.</param>
         /// <returns>The transform result.</returns>
         public static TransformResult ExecuteDocument(OdinTransform transform, OdinDocument doc)
+            => ExecuteDocument(transform, doc, null);
+
+        /// <summary>
+        /// Execute a parsed transform against an <see cref="OdinDocument"/> with options.
+        /// </summary>
+        /// <param name="transform">The parsed transform specification.</param>
+        /// <param name="doc">The source ODIN document.</param>
+        /// <param name="options">Execution options (e.g., an import resolver). May be null.</param>
+        /// <returns>The transform result.</returns>
+        public static TransformResult ExecuteDocument(OdinTransform transform, OdinDocument doc, TransformOptions? options)
         {
             if (transform == null) throw new ArgumentNullException(nameof(transform));
             if (doc == null) throw new ArgumentNullException(nameof(doc));
 
             var dynSource = OdinDocumentToDynValue(doc);
-            return Execute(transform, dynSource);
+            return Execute(transform, dynSource, options);
         }
 
         /// <summary>
@@ -245,7 +285,20 @@ namespace Odin.Core.Transform
         /// <param name="source">The source data as a <see cref="DynValue"/>.</param>
         /// <returns>The transform result containing output, formatted string, and diagnostics.</returns>
         public static TransformResult Execute(OdinTransform transform, DynValue source)
+            => Execute(transform, source, null);
+
+        /// <summary>
+        /// Execute a parsed transform against source data with execution options.
+        /// </summary>
+        /// <param name="transform">The parsed transform specification.</param>
+        /// <param name="source">The source data as a <see cref="DynValue"/>.</param>
+        /// <param name="options">Execution options (e.g., an import resolver). May be null.</param>
+        /// <returns>The transform result containing output, formatted string, and diagnostics.</returns>
+        public static TransformResult Execute(OdinTransform transform, DynValue source, TransformOptions? options)
         {
+            if (options?.ImportResolver != null && transform.Imports.Count > 0)
+                ResolveImports(transform, options.ImportResolver);
+
             // Check for multi-record mode
             if (transform.Source != null)
             {
@@ -334,7 +387,7 @@ namespace Odin.Core.Transform
 
             // 5. Format the output
             string formatted = FormatOutput(output, transform.Target.Format, transform.Target.Options,
-                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces);
+                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces, ctx.Errors.Add);
 
             return new TransformResult
             {
@@ -554,7 +607,7 @@ namespace Odin.Core.Transform
             }
 
             string formatted = FormatOutput(output, transform.Target.Format, transform.Target.Options,
-                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces);
+                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces, ctx.Errors.Add);
 
             return new TransformResult
             {
@@ -598,6 +651,39 @@ namespace Odin.Core.Transform
         // ─────────────────────────────────────────────────────────────────────
         // Context building
         // ─────────────────────────────────────────────────────────────────────
+
+        // Merge imported lookup tables, constants, accumulators, and named segments
+        // into this transform. Local declarations win over imported ones; imported
+        // segments are appended so their mappings remain referenceable. An import the
+        // resolver cannot satisfy (null) is skipped.
+        private static void ResolveImports(OdinTransform transform, Func<string, string?> resolver)
+        {
+            var seen = new HashSet<string>();
+            foreach (var imp in transform.Imports)
+            {
+                if (!seen.Add(imp.Path)) continue;
+
+                var text = resolver(imp.Path);
+                if (text == null) continue;
+
+                var imported = TransformParser.Parse(text);
+
+                foreach (var kvp in imported.Tables)
+                    if (!transform.Tables.ContainsKey(kvp.Key)) transform.Tables[kvp.Key] = kvp.Value;
+                foreach (var kvp in imported.Constants)
+                    if (!transform.Constants.ContainsKey(kvp.Key)) transform.Constants[kvp.Key] = kvp.Value;
+                foreach (var kvp in imported.Accumulators)
+                    if (!transform.Accumulators.ContainsKey(kvp.Key)) transform.Accumulators[kvp.Key] = kvp.Value;
+
+                var existingPaths = new HashSet<string>();
+                foreach (var s in transform.Segments) existingPaths.Add(s.Path);
+                foreach (var segment in imported.Segments)
+                {
+                    if (string.IsNullOrEmpty(segment.Path) || existingPaths.Contains(segment.Path)) continue;
+                    transform.Segments.Add(segment);
+                }
+            }
+        }
 
         private static ExecContext BuildContext(OdinTransform transform, DynValue source)
         {
@@ -811,7 +897,16 @@ namespace Odin.Core.Transform
             if (segment.Loops.Count > 1 && segment.IsArray)
             {
                 var results = new List<DynValue>();
-                IterateLoops(segment.Loops, 0, ctx, segment, ctx.Source, currentPrefix, results, null);
+                // A non-array loop source raises a coded error honoring onError.
+                try
+                {
+                    IterateLoops(segment.Loops, 0, ctx, segment, ctx.Source, currentPrefix, results, null);
+                }
+                catch (CodedTransformException ex)
+                {
+                    EmitLoopError(ctx, ex.Error);
+                    return;
+                }
                 var arr = DynValue.Array(results);
                 if (isRoot) output = arr;
                 else SetPath(ref output, cleanName, arr);
@@ -824,7 +919,7 @@ namespace Odin.Core.Transform
                 // Single :loop with an alias binds the alias to each item.
                 string? singleAlias = segment.Loops.Count == 1 ? segment.Loops[0].Alias : null;
                 var sourceVal = ResolvePath(ctx.Source, segment.SourcePath, ctx.Constants, ctx.Accumulators);
-                // Missing/null source produces an empty array (no iterations)
+                // Absent/null source produces an empty array (no iterations).
                 if (sourceVal.Type == DynValueType.Null)
                 {
                     var emptyArr = DynValue.Array(new List<DynValue>());
@@ -834,7 +929,18 @@ namespace Odin.Core.Transform
                         SetPath(ref output, cleanName, emptyArr);
                     return;
                 }
-                var arrayVal = sourceVal.Type == DynValueType.Array ? sourceVal : DynValue.Array(new List<DynValue> { sourceVal });
+                // T009: a present non-array scalar loop source is an error.
+                if (sourceVal.Type != DynValueType.Array)
+                {
+                    EmitLoopError(ctx, new TransformError
+                    {
+                        Code = TransformErrorCode.LoopSourceNotArray.Code(),
+                        Message = "Loop source path '" + segment.SourcePath + "' does not resolve to an array",
+                        Path = segment.SourcePath,
+                    });
+                    return;
+                }
+                var arrayVal = sourceVal;
                 var items = arrayVal.AsArray();
                 if (items != null)
                 {
@@ -1049,6 +1155,60 @@ namespace Odin.Core.Transform
                 // Validation modifiers: :validate / :enum / :range (honors onValidation policy).
                 if (!ValidateFieldValue(val, mapping, ctx)) return;
 
+                // Missing source path: a required field always fails (T005); an ordinary
+                // field honors the onMissing policy (fail -> T005, warn -> warning,
+                // skip/default -> keep null). A path present with a null value is not
+                // "missing" — a required present-null field is SOURCE_MISSING.
+                bool isRequired = mapping.Modifiers != null && mapping.Modifiers.Required;
+                if (val.Type == DynValueType.Null && IsCopySourceAbsent(mapping, ctx, currentSource))
+                {
+                    var rawPath = ((CopyExpression)mapping.Expression).Path;
+                    var cleanPath = rawPath.StartsWith("@", StringComparison.Ordinal) ? rawPath.Substring(1) : rawPath;
+                    if (cleanPath.StartsWith(".", StringComparison.Ordinal)) cleanPath = cleanPath.Substring(1);
+
+                    if (isRequired)
+                    {
+                        ctx.Errors.Add(new TransformError
+                        {
+                            Code = TransformErrorCode.SourcePathNotFound.Code(),
+                            Message = "Source path not found: " + cleanPath,
+                            Path = mapping.Target,
+                        });
+                        return;
+                    }
+                    var policy = OnMissingPolicy(ctx);
+                    if (policy == "fail")
+                    {
+                        ctx.Errors.Add(new TransformError
+                        {
+                            Code = TransformErrorCode.SourcePathNotFound.Code(),
+                            Message = "Source path not found: " + cleanPath,
+                            Path = mapping.Target,
+                        });
+                        return;
+                    }
+                    if (policy == "warn")
+                    {
+                        ctx.Warnings.Add(new TransformWarning
+                        {
+                            Code = TransformErrorCode.SourcePathNotFound.Code(),
+                            Message = "Source path not found: " + cleanPath,
+                            Path = mapping.Target,
+                        });
+                    }
+                }
+                else if (isRequired && val.Type == DynValueType.Null)
+                {
+                    // Required field present but explicitly null.
+                    ctx.Errors.Add(new TransformError
+                    {
+                        Code = "SOURCE_MISSING",
+                        Message = "Required field '" + mapping.Target + "' is missing or null",
+                        Path = mapping.Target,
+                    });
+                    return;
+                }
+
                 // :raw emits inline JSON structurally instead of an escaped string.
                 if (FindDirective(mapping.Directives, "raw") != null)
                     val = ParseRawJsonValue(val);
@@ -1078,6 +1238,27 @@ namespace Odin.Core.Transform
             {
                 // onError policy defaults to 'fail' — surface verb/transform errors.
                 var onError = OnErrorPolicy(ctx);
+
+                // Coded errors carry a stable T-code; preserve it under fail/warn.
+                if (e is CodedTransformException coded)
+                {
+                    if (onError == "warn")
+                        ctx.Warnings.Add(new TransformWarning
+                        {
+                            Code = coded.Error.Code,
+                            Message = coded.Error.Message,
+                            Path = mapping.Target,
+                        });
+                    else if (onError != "skip")
+                        ctx.Errors.Add(new TransformError
+                        {
+                            Code = coded.Error.Code,
+                            Message = coded.Error.Message,
+                            Path = mapping.Target,
+                        });
+                    return;
+                }
+
                 if (onError == "warn")
                     ctx.Warnings.Add(new TransformWarning
                     {
@@ -1091,6 +1272,21 @@ namespace Odin.Core.Transform
                         Path = mapping.Target,
                     });
             }
+        }
+
+        // Surface a loop-level coded error honoring the onError policy.
+        private static void EmitLoopError(ExecContext ctx, TransformError error)
+        {
+            var onError = OnErrorPolicy(ctx);
+            if (onError == "warn")
+                ctx.Warnings.Add(new TransformWarning
+                {
+                    Code = error.Code,
+                    Message = error.Message,
+                    Path = error.Path,
+                });
+            else if (onError != "skip")
+                ctx.Errors.Add(error);
         }
 
         /// <summary>Resolve the onError policy (fail/warn/skip), defaulting to 'fail'.</summary>
@@ -1501,7 +1697,12 @@ namespace Odin.Core.Transform
             {
                 if (call.IsCustom)
                     return evaluatedArgs.Length > 0 ? evaluatedArgs[0] : DynValue.Null();
-                throw new InvalidOperationException("unknown verb: '" + call.Verb + "'");
+                // T001: unknown built-in verb.
+                throw new CodedTransformException(new TransformError
+                {
+                    Code = TransformErrorCode.UnknownVerb.Code(),
+                    Message = "Unknown verb: " + call.Verb,
+                });
             }
 
             var verbCtx = new VerbContext
@@ -1623,6 +1824,80 @@ namespace Odin.Core.Transform
             return ResolvePath(source, path, constants, accumulators);
         }
 
+        // Whether a mapping copies a source path that is absent (the key is not
+        // present) — distinct from a path present with a null value. Only plain copy
+        // expressions qualify; verbs, literals, objects, and special paths never do.
+        private static bool IsCopySourceAbsent(FieldMapping mapping, ExecContext ctx, DynValue currentSource)
+        {
+            if (mapping.Expression is not CopyExpression copy) return false;
+            // A :default or :object supplies its own value; not a missing-source error.
+            if (FindDirective(mapping.Directives, "default") != null
+                || FindDirective(mapping.Directives, "object") != null) return false;
+
+            var path = copy.Path.Trim();
+            if (path.StartsWith("@", StringComparison.Ordinal)) path = path.Substring(1);
+            if (path.Length == 0 || path.StartsWith("$", StringComparison.Ordinal)) return false;
+
+            // Loop variables and counters are not source paths.
+            if (path == "_index" || path == "_item" || path == "_length") return false;
+            var counterKey = path;
+            if (ctx.LoopVars.ContainsKey(counterKey)) return false;
+
+            DynValue target;
+            string subPath;
+            if (path.StartsWith(".", StringComparison.Ordinal))
+            {
+                target = currentSource;
+                subPath = path.Substring(1);
+            }
+            else
+            {
+                var firstPart = path.Split('.')[0];
+                if (ctx.Aliases.ContainsKey(firstPart))
+                {
+                    target = ctx.Aliases[firstPart];
+                    subPath = path.Contains('.') ? path.Substring(firstPart.Length + 1) : "";
+                }
+                else
+                {
+                    target = ctx.Source;
+                    subPath = path;
+                }
+            }
+
+            return subPath.Length == 0 ? false : !PathIsPresent(target, subPath);
+        }
+
+        // Walk a dotted/indexed path; returns false only when a key/index along the
+        // way is absent. A present node holding null returns true.
+        private static bool PathIsPresent(DynValue value, string path)
+        {
+            var segments = ParsePathSegments(path);
+            var current = value;
+            foreach (var seg in segments)
+            {
+                if (seg.IsIndex)
+                {
+                    if (!string.IsNullOrEmpty(seg.Name))
+                    {
+                        var fieldVal = current.Get(seg.Name);
+                        if (fieldVal == null) return false;
+                        current = fieldVal;
+                    }
+                    var indexed = current.GetIndex(seg.Index);
+                    if (indexed == null) return false;
+                    current = indexed;
+                }
+                else
+                {
+                    var next = current.Get(seg.Name);
+                    if (next == null) return false;
+                    current = next;
+                }
+            }
+            return true;
+        }
+
         internal static DynValue ResolvePath(
             DynValue source, string path,
             Dictionary<string, DynValue> constants, Dictionary<string, DynValue> accumulators)
@@ -1700,7 +1975,19 @@ namespace Odin.Core.Transform
                 itemsVal = ResolveSubPath(current, loopPath);
             }
 
-            if (itemsVal.Type != DynValueType.Array) return;
+            if (itemsVal.Type != DynValueType.Array)
+            {
+                // A present non-array scalar is a T009 error; an absent/null source
+                // yields zero rows silently.
+                if (itemsVal.Type != DynValueType.Null)
+                    throw new CodedTransformException(new TransformError
+                    {
+                        Code = TransformErrorCode.LoopSourceNotArray.Code(),
+                        Message = "Loop source path '" + loopPath + "' does not resolve to an array",
+                        Path = segment.Name,
+                    });
+                return;
+            }
             var items = itemsVal.AsArray();
             if (items == null) return;
 
@@ -1759,7 +2046,16 @@ namespace Odin.Core.Transform
 
             if (segment.Loops.Count >= 1 && segment.IsArray)
             {
-                IterateLoops(segment.Loops, 0, ctx, segment, ctx.Source, cleanName, new List<DynValue>(), Render);
+                // A non-array loop source raises a coded error honoring onError.
+                try
+                {
+                    IterateLoops(segment.Loops, 0, ctx, segment, ctx.Source, cleanName, new List<DynValue>(), Render);
+                }
+                catch (CodedTransformException ex)
+                {
+                    EmitLoopError(ctx, ex.Error);
+                    return;
+                }
             }
             else
             {
@@ -2500,8 +2796,9 @@ namespace Odin.Core.Transform
         private static string FormatOutput(
             DynValue output, string targetFormat, Dictionary<string, string> options,
             List<TransformSegment> segments, Dictionary<string, OdinModifiers> modifiers,
-            Dictionary<string, string>? namespaces = null)
+            Dictionary<string, string>? namespaces = null, Action<TransformError>? onError = null)
         {
+            // A registered custom formatter handles every format name.
             if (OutputFormatter != null)
                 return OutputFormatter(output, targetFormat, options, modifiers);
 
@@ -2537,9 +2834,18 @@ namespace Odin.Core.Transform
                 case "properties":
                     return FlatFormatter.Format(output, config);
 
-                default:
-                    // Unknown format: fall back to JSON
+                case "":
+                    // No format declared: emit JSON.
                     return JsonFormatter.Format(output, config);
+
+                default:
+                    // T006: unsupported target format. Report and emit no output.
+                    onError?.Invoke(new TransformError
+                    {
+                        Code = TransformErrorCode.InvalidOutputFormat.Code(),
+                        Message = "Invalid or unsupported output format: " + targetFormat,
+                    });
+                    return "";
             }
         }
 

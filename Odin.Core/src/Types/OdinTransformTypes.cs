@@ -651,5 +651,8 @@ namespace Odin.Core.Types
 
         /// <summary>Dotted path where the warning originated. Null if not path-specific.</summary>
         public string? Path { get; set; }
+
+        /// <summary>Machine-readable warning code (e.g., "T001"). Null if not categorized.</summary>
+        public string? Code { get; set; }
     }
 }

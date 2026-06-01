@@ -36,6 +36,9 @@ internal static class AggregationVerbs
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Largest integer exactly representable as a double (2^53 - 1).
+    private const double MaxSafeInteger = 9007199254740991.0;
+
     private static double? ToDouble(DynValue v)
     {
         if (v.IsNull) return null;
@@ -87,7 +90,26 @@ internal static class AggregationVerbs
         {
             var cv = ToDouble(current) ?? 0.0;
             var vv = ToDouble(args[1]) ?? 0.0;
-            current = NumericResult(cv + vv);
+            var sum = cv + vv;
+
+            // T008: the result exceeds representable numeric capacity (non-finite, or
+            // an integer accumulator beyond the safe-integer magnitude where precision
+            // is lost). Retain the last valid accumulator value.
+            bool integerAccumulator = current.Type == DynValueType.Integer;
+            bool overflowed = double.IsNaN(sum) || double.IsInfinity(sum)
+                || (integerAccumulator && Math.Abs(sum) > MaxSafeInteger);
+            if (overflowed)
+            {
+                ctx.Errors.Add(new TransformError
+                {
+                    Code = TransformErrorCode.AccumulatorOverflow.Code(),
+                    Message = string.Format(CultureInfo.InvariantCulture,
+                        "Accumulator '{0}' overflow with value {1}", accName, sum),
+                });
+                return current;
+            }
+
+            current = NumericResult(sum);
             ctx.Accumulators[accName] = current;
             return current;
         }

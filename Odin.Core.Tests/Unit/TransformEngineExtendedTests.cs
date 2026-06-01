@@ -1791,7 +1791,9 @@ public class TransformEngineExtendedTests
         };
         var t = MkCustom(new List<TransformSegment> { seg });
         var r = TransformEngine.Execute(t, Obj(("notArray", S("scalar"))));
-        Assert.True(r.Success);
+        // A present non-array scalar loop source is a T009 error.
+        Assert.False(r.Success);
+        Assert.Contains(r.Errors, e => e.Code == "T009");
     }
 
     [Fact]
