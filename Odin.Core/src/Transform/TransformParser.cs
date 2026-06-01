@@ -573,6 +573,9 @@ namespace Odin.Core.Transform
         {
             string? sourcePath = null;
             string? counter = null;
+            var loops = new List<SegmentDirective>();
+            string? literalBody = null;
+            bool isLiteral = false;
             Discriminator? discriminator = null;
             int? pass = null;
             string? condition = null;
@@ -608,9 +611,38 @@ namespace Odin.Core.Transform
                 if (field.StartsWith("_", StringComparison.Ordinal))
                 {
                     // Directive field
+                    // Repeated loops arrive as _loop, _loop2, _loop3; normalize to a loop directive.
+                    string directiveName = field.StartsWith("_", StringComparison.Ordinal) ? field.Substring(1) : field;
+                    if (System.Text.RegularExpressions.Regex.IsMatch(directiveName, @"^loop\d+$"))
+                        directiveName = "loop";
+
+                    if (directiveName == "loop")
+                    {
+                        string loopVal = OdinValueToString(value);
+                        string? alias = null;
+                        int asIdx = loopVal.IndexOf(":as", StringComparison.Ordinal);
+                        if (asIdx >= 0)
+                        {
+                            alias = loopVal.Substring(asIdx + 3).Trim();
+                            loopVal = loopVal.Substring(0, asIdx).Trim();
+                        }
+                        if (sourcePath == null) sourcePath = loopVal;
+                        loops.Add(new SegmentDirective { DirectiveType = "loop", Value = loopVal, Alias = alias });
+                        continue;
+                    }
+                    if (directiveName == "literal")
+                    {
+                        isLiteral = true;
+                        continue;
+                    }
+                    if (directiveName == "literalBody")
+                    {
+                        literalBody = OdinValueToString(value);
+                        continue;
+                    }
+
                     switch (field)
                     {
-                        case "_loop":
                         case "_from":
                             sourcePath = OdinValueToString(value);
                             break;
@@ -715,6 +747,9 @@ namespace Odin.Core.Transform
                 Name = name,
                 Path = name,
                 SourcePath = sourcePath,
+                Loops = loops,
+                LiteralBody = literalBody,
+                IsLiteral = isLiteral,
                 Counter = counter,
                 SegmentDiscriminator = discriminator,
                 IsArray = isArray,

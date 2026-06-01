@@ -65,6 +65,9 @@ namespace Odin.Core.Transform
         /// <summary>Loop variables for the current iteration scope.</summary>
         public Dictionary<string, DynValue> LoopVars;
 
+        /// <summary>Loop aliases bound via <c>:loop path :as alias</c>.</summary>
+        public Dictionary<string, DynValue> Aliases = new Dictionary<string, DynValue>();
+
         /// <summary>Verb registry: verb name -> function.</summary>
         public Dictionary<string, Func<DynValue[], VerbContext, DynValue>> Verbs;
 
@@ -96,6 +99,7 @@ namespace Odin.Core.Transform
             Accumulators = new Dictionary<string, DynValue>();
             Tables = new Dictionary<string, LookupTable>();
             LoopVars = new Dictionary<string, DynValue>();
+            Aliases = new Dictionary<string, DynValue>();
             Verbs = new Dictionary<string, Func<DynValue[], VerbContext, DynValue>>();
             Warnings = new List<TransformWarning>();
             Errors = new List<TransformError>();
@@ -796,9 +800,29 @@ namespace Odin.Core.Transform
                 return;
             }
 
+            // Literal block: emit interpolated text lines instead of field mappings.
+            if (segment.IsLiteral)
+            {
+                ProcessLiteralSegment(segment, ctx, ref output, cleanName, isRoot);
+                return;
+            }
+
+            // Nested loops: drive a cross-product over multiple :loop directives.
+            if (segment.Loops.Count > 1 && segment.IsArray)
+            {
+                var results = new List<DynValue>();
+                IterateLoops(segment.Loops, 0, ctx, segment, ctx.Source, currentPrefix, results, null);
+                var arr = DynValue.Array(results);
+                if (isRoot) output = arr;
+                else SetPath(ref output, cleanName, arr);
+                return;
+            }
+
             // Array loop
             if (segment.SourcePath != null)
             {
+                // Single :loop with an alias binds the alias to each item.
+                string? singleAlias = segment.Loops.Count == 1 ? segment.Loops[0].Alias : null;
                 var sourceVal = ResolvePath(ctx.Source, segment.SourcePath, ctx.Constants, ctx.Accumulators);
                 // Missing/null source produces an empty array (no iterations)
                 if (sourceVal.Type == DynValueType.Null)
@@ -822,6 +846,8 @@ namespace Odin.Core.Transform
                         ctx.LoopVars["_item"] = item;
                         ctx.LoopVars["_index"] = DynValue.Integer(idx);
                         ctx.LoopVars["_length"] = DynValue.Integer(items.Count);
+                        if (singleAlias != null)
+                            ctx.Aliases[singleAlias] = item;
 
                         // A :counter is readable by its name and via @$accumulator.<name>.
                         if (segment.Counter != null)
@@ -859,6 +885,8 @@ namespace Odin.Core.Transform
                         ctx.LoopVars.Remove("_item");
                         ctx.LoopVars.Remove("_index");
                         ctx.LoopVars.Remove("_length");
+                        if (singleAlias != null)
+                            ctx.Aliases.Remove(singleAlias);
                     }
                     var arrResult = DynValue.Array(resultItems);
                     if (isRoot)
@@ -1289,6 +1317,7 @@ namespace Odin.Core.Transform
                     // Loop counters declared via :counter are readable by bare name.
                     var counterKey = path.StartsWith("@", StringComparison.Ordinal) ? path.Substring(1) : path;
                     if (ctx.LoopVars.TryGetValue(counterKey, out var counterVal)) return counterVal;
+                    if (TryResolveAlias(path, ctx, out var aliasVal)) return aliasVal;
                     return ResolvePathWithOutput(currentSource, currentOutput, ctx.GlobalOutput, path, ctx.Constants, ctx.Accumulators);
                 }
 
@@ -1394,6 +1423,8 @@ namespace Odin.Core.Transform
 
             if (expr.StartsWith("@", StringComparison.Ordinal))
             {
+                if (TryResolveAlias(expr.Substring(1), ctx, out var aliasVal))
+                    return InterpolatedValueToString(aliasVal);
                 var val = ResolvePathWithOutput(currentSource, currentOutput, ctx.GlobalOutput,
                     expr.Substring(1), ctx.Constants, ctx.Accumulators);
                 return InterpolatedValueToString(val);
@@ -1628,6 +1659,211 @@ namespace Odin.Core.Transform
             if (clean.Length == 0) return source;
 
             return ResolveSubPath(source, clean);
+        }
+
+        // Drive one or more :loop directives as a nested cross-product. Each level binds
+        // its alias and current item, then recurses into the next loop; the innermost
+        // level emits one result element per item. Relative loop paths (.field) resolve
+        // against the current outer item; a non-array source at any level yields no rows.
+        private static void IterateLoops(
+            List<SegmentDirective> loops,
+            int depth,
+            ExecContext ctx,
+            TransformSegment segment,
+            DynValue current,
+            string currentPrefix,
+            List<DynValue> results,
+            Action<DynValue>? onItem)
+        {
+            var loop = loops[depth];
+            bool isOutermost = depth == 0;
+            bool isInnermost = depth == loops.Count - 1;
+
+            string loopPath = loop.Value ?? "";
+            if (loopPath.StartsWith("@", StringComparison.Ordinal)) loopPath = loopPath.Substring(1);
+
+            DynValue itemsVal;
+            if (loopPath.StartsWith(".", StringComparison.Ordinal))
+            {
+                itemsVal = ResolveSubPath(current, loopPath.Substring(1));
+            }
+            else if (isOutermost)
+            {
+                itemsVal = ResolvePath(ctx.Source, loopPath, ctx.Constants, ctx.Accumulators);
+            }
+            else if (TryResolveAlias(loopPath, ctx, out var aliased))
+            {
+                itemsVal = aliased;
+            }
+            else
+            {
+                itemsVal = ResolveSubPath(current, loopPath);
+            }
+
+            if (itemsVal.Type != DynValueType.Array) return;
+            var items = itemsVal.AsArray();
+            if (items == null) return;
+
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                ctx.LoopVars["_item"] = item;
+                ctx.LoopVars["_index"] = DynValue.Integer(i);
+                ctx.LoopVars["_length"] = DynValue.Integer(items.Count);
+                if (loop.Alias != null) ctx.Aliases[loop.Alias] = item;
+                if (segment.Counter != null && isInnermost)
+                {
+                    ctx.Accumulators[segment.Counter] = DynValue.Integer(i);
+                    ctx.LoopVars[segment.Counter] = DynValue.Integer(i);
+                }
+
+                if (!isInnermost)
+                {
+                    IterateLoops(loops, depth + 1, ctx, segment, item, currentPrefix, results, onItem);
+                }
+                else if (onItem != null)
+                {
+                    onItem(item);
+                }
+                else
+                {
+                    var itemOutput = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
+                    foreach (var mapping in segment.Mappings)
+                        ProcessMapping(mapping, ctx, item, ref itemOutput, currentPrefix);
+                    results.Add(itemOutput);
+                }
+
+                if (loop.Alias != null) ctx.Aliases.Remove(loop.Alias);
+            }
+
+            ctx.LoopVars.Remove("_item");
+            ctx.LoopVars.Remove("_index");
+            ctx.LoopVars.Remove("_length");
+        }
+
+        // Render a :literal segment to interpolated text lines. The """ body's outer
+        // delimiter newline is stripped from each end; under :loop the block renders
+        // once per item. Lines are emitted verbatim by the fixed-width formatter.
+        private static void ProcessLiteralSegment(
+            TransformSegment segment, ExecContext ctx, ref DynValue output, string cleanName, bool isRoot)
+        {
+            string template = NormalizeLiteralBody(segment.LiteralBody ?? "");
+            var lines = new List<DynValue>();
+
+            void Render(DynValue current)
+            {
+                string rendered = InterpolateLiteralBlock(template, ctx, current, ctx.GlobalOutput, segment.Path);
+                foreach (var line in rendered.Split('\n'))
+                    lines.Add(DynValue.String(line));
+            }
+
+            if (segment.Loops.Count >= 1 && segment.IsArray)
+            {
+                IterateLoops(segment.Loops, 0, ctx, segment, ctx.Source, cleanName, new List<DynValue>(), Render);
+            }
+            else
+            {
+                Render(ctx.Source);
+            }
+
+            var holder = DynValue.Object(new List<KeyValuePair<string, DynValue>>
+            {
+                new KeyValuePair<string, DynValue>("__literalLines", DynValue.Array(lines)),
+            });
+            if (isRoot) output = holder;
+            else SetPath(ref output, cleanName, holder);
+        }
+
+        // Strip one leading and one trailing newline so the """ delimiters, written on
+        // their own lines, do not contribute blank output lines.
+        private static string NormalizeLiteralBody(string body)
+        {
+            var s = body;
+            if (s.StartsWith("\r\n", StringComparison.Ordinal)) s = s.Substring(2);
+            else if (s.StartsWith("\n", StringComparison.Ordinal)) s = s.Substring(1);
+            if (s.EndsWith("\r\n", StringComparison.Ordinal)) s = s.Substring(0, s.Length - 2);
+            else if (s.EndsWith("\n", StringComparison.Ordinal)) s = s.Substring(0, s.Length - 1);
+            return s;
+        }
+
+        // Interpolate a :literal block body. Differs from InterpolateString in escapes
+        // and nesting: \${ -> ${, \$ -> $, \\ -> \; a ${...} whose expression itself
+        // contains ${ raises T014 (nested interpolation).
+        private static string InterpolateLiteralBlock(
+            string template, ExecContext ctx, DynValue currentSource, DynValue currentOutput, string segmentPath)
+        {
+            var sb = new System.Text.StringBuilder(template.Length);
+            int i = 0;
+            int len = template.Length;
+
+            while (i < len)
+            {
+                char ch = template[i];
+
+                if (ch == '\\')
+                {
+                    char next = i + 1 < len ? template[i + 1] : '\0';
+                    if (next == '$' && i + 2 < len && template[i + 2] == '{') { sb.Append("${"); i += 3; continue; }
+                    if (next == '\\') { sb.Append('\\'); i += 2; continue; }
+                    if (next == '$') { sb.Append('$'); i += 2; continue; }
+                    sb.Append('\\'); i += 1; continue;
+                }
+
+                if (ch == '$' && i + 1 < len && template[i + 1] == '{')
+                {
+                    int close = template.IndexOf('}', i + 2);
+                    if (close == -1)
+                    {
+                        sb.Append(template, i, len - i);
+                        break;
+                    }
+                    string expr = template.Substring(i + 2, close - (i + 2));
+                    if (expr.Contains("${"))
+                    {
+                        ctx.Errors.Add(new TransformError
+                        {
+                            Code = "T014",
+                            Message = $"Nested interpolation is not allowed: ${{{expr}}}",
+                            Path = segmentPath,
+                        });
+                        return "";
+                    }
+                    sb.Append(EvaluateInterpolationExpr(expr.Trim(), ctx, currentSource, currentOutput,
+                        template.Substring(i, close - i + 1)));
+                    i = close + 1;
+                    continue;
+                }
+
+                sb.Append(ch);
+                i++;
+            }
+
+            return sb.ToString();
+        }
+
+        // Resolve a path whose first segment names a loop alias. Returns false when
+        // the path is relative (leading dot) or its head is not a bound alias.
+        private static bool TryResolveAlias(string path, ExecContext ctx, out DynValue result)
+        {
+            result = DynValue.Null();
+            if (ctx.Aliases.Count == 0) return false;
+
+            var clean = path.StartsWith("@", StringComparison.Ordinal) ? path.Substring(1) : path;
+            if (clean.Length == 0 || clean[0] == '.') return false;
+
+            int dot = clean.IndexOf('.');
+            int bracket = clean.IndexOf('[');
+            int end = clean.Length;
+            if (dot >= 0) end = Math.Min(end, dot);
+            if (bracket >= 0) end = Math.Min(end, bracket);
+            var head = clean.Substring(0, end);
+
+            if (!ctx.Aliases.TryGetValue(head, out var aliased)) return false;
+
+            var rest = clean.Substring(end);
+            if (rest.StartsWith(".", StringComparison.Ordinal)) rest = rest.Substring(1);
+            result = rest.Length == 0 ? aliased : ResolveSubPath(aliased, rest);
+            return true;
         }
 
         private static DynValue ResolveSubPath(DynValue value, string path)

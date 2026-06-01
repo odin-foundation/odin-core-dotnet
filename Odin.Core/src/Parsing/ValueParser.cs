@@ -48,6 +48,7 @@ namespace Odin.Core.Parsing
                     return (OdinValues.Boolean(true), 1);
 
                 case TokenType.QuotedString:
+                case TokenType.MultilineString:
                     return (OdinValues.String(token.Value), 1);
 
                 case TokenType.BareWord:

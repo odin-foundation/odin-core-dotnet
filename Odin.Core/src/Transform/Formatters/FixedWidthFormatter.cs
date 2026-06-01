@@ -24,18 +24,19 @@ namespace Odin.Core.Transform
             if (value == null || segments == null || segments.Count == 0)
                 return "";
 
-            // Check if any segment has :pos/:len directives — if so, use segment-driven mode
-            bool hasPositionalFields = false;
+            // Use segment-driven mode when a segment has :pos/:len directives or is a
+            // :literal block; otherwise fall back to config-driven columns.
+            bool hasSegmentContent = false;
             for (int s = 0; s < segments.Count; s++)
             {
-                if (HasPositionalDirectives(segments[s]))
+                if (segments[s].IsLiteral || HasPositionalDirectives(segments[s]))
                 {
-                    hasPositionalFields = true;
+                    hasSegmentContent = true;
                     break;
                 }
             }
 
-            if (!hasPositionalFields)
+            if (!hasSegmentContent)
                 return Format(value, config);
 
             var outputObj = value.AsObject();
@@ -82,6 +83,18 @@ namespace Odin.Core.Transform
                 }
                 if (segData == null) continue;
 
+                // Literal segment: emit pre-rendered interpolated lines verbatim.
+                var literalLines = ExtractLiteralLines(segData);
+                if (literalLines != null)
+                {
+                    for (int i = 0; i < literalLines.Count; i++)
+                    {
+                        sb.Append(literalLines[i].AsString() ?? "");
+                        sb.Append('\n');
+                    }
+                    continue;
+                }
+
                 // Collect field definitions from segment mappings
                 var fieldDefs = CollectFieldDefs(seg);
                 if (fieldDefs.Count == 0) continue;
@@ -112,6 +125,20 @@ namespace Odin.Core.Transform
             }
 
             return sb.ToString();
+        }
+
+        // Pre-rendered literal-block lines emitted by the engine, or null.
+        private static List<DynValue>? ExtractLiteralLines(DynValue segData)
+        {
+            if (segData.Type != DynValueType.Object) return null;
+            var obj = segData.AsObject();
+            if (obj == null) return null;
+            for (int i = 0; i < obj.Count; i++)
+            {
+                if (obj[i].Key == "__literalLines")
+                    return obj[i].Value.AsArray();
+            }
+            return null;
         }
 
         private static bool HasPositionalDirectives(TransformSegment segment)

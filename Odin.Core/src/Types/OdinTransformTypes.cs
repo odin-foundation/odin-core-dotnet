@@ -214,6 +214,15 @@ namespace Odin.Core.Types
         /// <summary>Segment-level directives (e.g., :flatten, :sort).</summary>
         public List<SegmentDirective> Directives { get; set; } = new List<SegmentDirective>();
 
+        /// <summary>Ordered loop directives for nested cross-product iteration.</summary>
+        public List<SegmentDirective> Loops { get; set; } = new List<SegmentDirective>();
+
+        /// <summary>Verbatim body of a <c>:literal</c> segment, captured from its <c>"""…"""</c> block.</summary>
+        public string? LiteralBody { get; set; }
+
+        /// <summary>When <c>true</c>, this segment renders an interpolated literal block.</summary>
+        public bool IsLiteral { get; set; }
+
         /// <summary>Field mappings within this segment.</summary>
         public List<FieldMapping> Mappings { get; set; } = new List<FieldMapping>();
 
@@ -249,6 +258,9 @@ namespace Odin.Core.Types
 
         /// <summary>Optional directive value or argument.</summary>
         public string? Value { get; set; }
+
+        /// <summary>Loop alias bound via <c>:loop path :as alias</c>.</summary>
+        public string? Alias { get; set; }
 
         /// <summary>Parsed verb-expression condition (for if/elif written as a verb expression).</summary>
         public FieldExpression? Expr { get; set; }

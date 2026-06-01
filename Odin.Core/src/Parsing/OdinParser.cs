@@ -219,6 +219,10 @@ namespace Odin.Core.Parsing
                         ParseBareDirective(state, assignments);
                         break;
 
+                    case TokenType.MultilineString when !inMetadata:
+                        ParseBareLiteralBlock(state, assignments);
+                        break;
+
                     case TokenType.Newline:
                     case TokenType.Comment:
                     {
@@ -299,9 +303,43 @@ namespace Odin.Core.Parsing
                 }
             }
 
+            // Repeated `:loop` lines on one segment each get a distinct path so all survive.
+            string key = "_" + name;
+            if (name == "loop")
+            {
+                string baseKey = state.CurrentHeader != null
+                    ? state.CurrentHeader + "._loop"
+                    : "_loop";
+                int n = 1;
+                while (assignments.ContainsKey(n == 1 ? baseKey : baseKey + n))
+                    n++;
+                key = n == 1 ? "_loop" : "_loop" + n;
+                string loopPath = state.CurrentHeader != null
+                    ? state.CurrentHeader + "." + key
+                    : key;
+                if (!assignments.ContainsKey(loopPath))
+                    assignments.Set(loopPath, new OdinString(value));
+                return;
+            }
+
             string fullPath = state.CurrentHeader != null
                 ? state.CurrentHeader + "._" + name
                 : "_" + name;
+
+            if (!assignments.ContainsKey(fullPath))
+                assignments.Set(fullPath, new OdinString(value));
+        }
+
+        // Store a bare `"""..."""` body line as a synthetic `<header>._literalBody`
+        // assignment, so the transform layer can pair it with the `:literal` directive.
+        private static void ParseBareLiteralBlock(ParserState state, OrderedMap<string, OdinValue> assignments)
+        {
+            string value = state.CurrentToken.Value;
+            state.Advance();
+
+            string fullPath = state.CurrentHeader != null
+                ? state.CurrentHeader + "._literalBody"
+                : "_literalBody";
 
             if (!assignments.ContainsKey(fullPath))
                 assignments.Set(fullPath, new OdinString(value));

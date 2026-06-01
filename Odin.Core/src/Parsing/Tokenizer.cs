@@ -158,6 +158,9 @@ namespace Odin.Core.Parsing
                     return new Token(TokenType.Equals, startPos, state.Pos, startLine, startCol, "=");
 
                 case '"':
+                    if (state.HasCharAt(1) && state.PeekAt(1) == '"' &&
+                        state.HasCharAt(2) && state.PeekAt(2) == '"')
+                        return ScanMultilineString(state);
                     return ScanQuotedString(state);
 
                 case '~':
@@ -337,6 +340,36 @@ namespace Odin.Core.Parsing
                     value.Append(c);
                     state.Advance();
                 }
+            }
+
+            throw new OdinParseException(ParseErrorCode.UnterminatedString, startLine, startCol);
+        }
+
+        // Scan a triple-quoted multiline string. Content is captured verbatim and
+        // may span newlines; closes at the next `"""`.
+        private static Token ScanMultilineString(TokenizerState state)
+        {
+            int start = state.Pos;
+            int startLine = state.Line;
+            int startCol = state.Column;
+
+            state.Advance(); // first "
+            state.Advance(); // second "
+            state.Advance(); // third "
+            int contentStart = state.Pos;
+
+            while (!state.IsAtEnd)
+            {
+                if (state.Peek() == '"' && state.HasCharAt(1) && state.PeekAt(1) == '"' &&
+                    state.HasCharAt(2) && state.PeekAt(2) == '"')
+                {
+                    string value = state.Source.Substring(contentStart, state.Pos - contentStart);
+                    state.Advance();
+                    state.Advance();
+                    state.Advance();
+                    return new Token(TokenType.MultilineString, start, state.Pos, startLine, startCol, value);
+                }
+                state.Advance();
             }
 
             throw new OdinParseException(ParseErrorCode.UnterminatedString, startLine, startCol);

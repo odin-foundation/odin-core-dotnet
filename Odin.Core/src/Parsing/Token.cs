@@ -13,6 +13,8 @@ namespace Odin.Core.Parsing
         Equals,
         /// <summary>A quoted string value (e.g., <c>"hello"</c>).</summary>
         QuotedString,
+        /// <summary>A triple-quoted multiline string value (e.g., <c>"""line1\nline2"""</c>).</summary>
+        MultilineString,
         /// <summary>A bare word value (unquoted string).</summary>
         BareWord,
         /// <summary>A number prefix <c>#</c>.</summary>
