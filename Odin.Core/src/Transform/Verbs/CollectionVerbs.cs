@@ -154,6 +154,52 @@ internal static class CollectionVerbs
         return result ?? DynValue.Null();
     }
 
+    // Evaluate a field/operator/value predicate against an item.
+    private static bool MatchesCondition(DynValue item, string fieldName, string op, DynValue compareValue)
+    {
+        DynValue fieldVal = GetField(item, fieldName);
+        string fieldStr = fieldVal.AsString() ?? fieldVal.ToString();
+        string cmpStr = compareValue.AsString() ?? compareValue.ToString();
+
+        switch (op)
+        {
+            case "=":
+            case "==":
+                return fieldStr == cmpStr;
+            case "!=":
+            case "<>":
+                return fieldStr != cmpStr;
+            case "<":
+            {
+                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                return a.HasValue && b.HasValue && a.Value < b.Value;
+            }
+            case "<=":
+            {
+                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                return a.HasValue && b.HasValue && a.Value <= b.Value;
+            }
+            case ">":
+            {
+                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                return a.HasValue && b.HasValue && a.Value > b.Value;
+            }
+            case ">=":
+            {
+                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                return a.HasValue && b.HasValue && a.Value >= b.Value;
+            }
+            case "contains":
+                return fieldStr.IndexOf(cmpStr, StringComparison.Ordinal) >= 0;
+            case "startsWith":
+                return fieldStr.StartsWith(cmpStr, StringComparison.Ordinal);
+            case "endsWith":
+                return fieldStr.EndsWith(cmpStr, StringComparison.Ordinal);
+            default:
+                return false;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Verb Implementations
     // ─────────────────────────────────────────────────────────────────────────
@@ -503,14 +549,15 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue Find(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Null();
+        if (args.Length < 4) return DynValue.Null();
         var arr = ExtractArray(args[0]);
-        string? fieldName = args.Length >= 2 ? args[1].AsString() : null;
+        string? fieldName = args[1].AsString();
+        string? op = args[2].AsString();
+        if (fieldName == null || op == null) return DynValue.Null();
 
         for (int i = 0; i < arr.Count; i++)
         {
-            DynValue testVal = fieldName != null ? GetField(arr[i], fieldName) : arr[i];
-            if (IsTruthy(testVal))
+            if (MatchesCondition(arr[i], fieldName, op, args[3]))
                 return arr[i];
         }
 
@@ -523,14 +570,15 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue FindIndex(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Integer(-1);
+        if (args.Length < 4) return DynValue.Integer(-1);
         var arr = ExtractArray(args[0]);
-        string? fieldName = args.Length >= 2 ? args[1].AsString() : null;
+        string? fieldName = args[1].AsString();
+        string? op = args[2].AsString();
+        if (fieldName == null || op == null) return DynValue.Integer(-1);
 
         for (int i = 0; i < arr.Count; i++)
         {
-            DynValue testVal = fieldName != null ? GetField(arr[i], fieldName) : arr[i];
-            if (IsTruthy(testVal))
+            if (MatchesCondition(arr[i], fieldName, op, args[3]))
                 return DynValue.Integer(i);
         }
 
@@ -628,13 +676,17 @@ internal static class CollectionVerbs
             groupList.Add(arr[i]);
         }
 
-        var entries = new List<KeyValuePair<string, DynValue>>();
+        var result = new List<DynValue>(orderedKeys.Count);
         for (int i = 0; i < orderedKeys.Count; i++)
         {
-            entries.Add(new KeyValuePair<string, DynValue>(orderedKeys[i], DynValue.Array(groups[orderedKeys[i]])));
+            result.Add(DynValue.Object(new List<KeyValuePair<string, DynValue>>
+            {
+                new("key", DynValue.String(orderedKeys[i])),
+                new("items", DynValue.Array(groups[orderedKeys[i]])),
+            }));
         }
 
-        return DynValue.Object(entries);
+        return DynValue.Array(result);
     }
 
     /// <summary>
@@ -644,17 +696,18 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue Partition(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Null();
+        if (args.Length < 4) return DynValue.Null();
         var arr = ExtractArray(args[0]);
-        string? fieldName = args.Length >= 2 ? args[1].AsString() : null;
+        string? fieldName = args[1].AsString();
+        string? op = args[2].AsString();
+        if (fieldName == null || op == null) return DynValue.Null();
 
         var pass = new List<DynValue>();
         var fail = new List<DynValue>();
 
         for (int i = 0; i < arr.Count; i++)
         {
-            DynValue testVal = fieldName != null ? GetField(arr[i], fieldName) : arr[i];
-            if (IsTruthy(testVal))
+            if (MatchesCondition(arr[i], fieldName, op, args[3]))
                 pass.Add(arr[i]);
             else
                 fail.Add(arr[i]);
@@ -817,15 +870,32 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue RowNumber(DynValue[] args, VerbContext ctx)
     {
-        long current = 0;
-        if (ctx.Accumulators.TryGetValue("_rowNumber", out var acc))
+        if (args.Length == 0) return DynValue.Null();
+        var arr = ExtractArray(args[0]);
+
+        var result = new List<DynValue>(arr.Count);
+        for (int i = 0; i < arr.Count; i++)
+            result.Add(PrependField("_rowNum", DynValue.Integer(i + 1), arr[i]));
+
+        return DynValue.Array(result);
+    }
+
+    // Build an object with a leading computed field followed by the item's fields
+    // (or a `value` field when the item is a primitive).
+    private static DynValue PrependField(string name, DynValue value, DynValue item)
+    {
+        var entries = new List<KeyValuePair<string, DynValue>> { new(name, value) };
+        if (item.Type == DynValueType.Object)
         {
-            var val = acc.AsInt64();
-            if (val.HasValue) current = val.Value;
+            var obj = item.AsObject();
+            if (obj != null)
+                foreach (var kv in obj) entries.Add(kv);
         }
-        current++;
-        ctx.Accumulators["_rowNumber"] = DynValue.Integer(current);
-        return DynValue.Integer(current);
+        else
+        {
+            entries.Add(new KeyValuePair<string, DynValue>("value", item));
+        }
+        return DynValue.Object(entries);
     }
 
     /// <summary>
@@ -894,16 +964,33 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue Dedupe(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Null();
+        if (args.Length < 2) return DynValue.Null();
         var arr = ExtractArray(args[0]);
         if (arr.Count == 0) return DynValue.Array(new List<DynValue>());
 
+        string keyField = args[1].AsString() ?? "";
+        var seen = new HashSet<string>();
         var result = new List<DynValue>();
-        result.Add(arr[0]);
 
-        for (int i = 1; i < arr.Count; i++)
+        for (int i = 0; i < arr.Count; i++)
         {
-            if (!AreEqual(arr[i], arr[i - 1]))
+            string keyValue;
+            if (arr[i].Type == DynValueType.Object)
+            {
+                var fieldVal = arr[i].Get(keyField);
+                if (fieldVal == null || fieldVal.IsNull)
+                {
+                    result.Add(arr[i]);
+                    continue;
+                }
+                keyValue = fieldVal.AsString() ?? fieldVal.ToString();
+            }
+            else
+            {
+                keyValue = arr[i].AsString() ?? arr[i].ToString();
+            }
+
+            if (seen.Add(keyValue))
                 result.Add(arr[i]);
         }
 
@@ -1119,20 +1206,21 @@ internal static class CollectionVerbs
         // Sort descending for ranking (highest = rank 1)
         indexed.Sort((a, b) => b.val.CompareTo(a.val));
 
-        var result = new DynValue[arr.Count];
-        for (int i = 0; i < arr.Count; i++)
-            result[i] = DynValue.Null();
-
+        var ranks = new int[arr.Count];
         int currentRank = 1;
         for (int i = 0; i < indexed.Count; i++)
         {
             // ReSharper disable once CompareOfFloatsByEqualityOperator
             if (i > 0 && indexed[i].val != indexed[i - 1].val)
                 currentRank = i + 1;
-            result[indexed[i].idx] = DynValue.Integer(currentRank);
+            ranks[indexed[i].idx] = currentRank;
         }
 
-        return DynValue.Array(new List<DynValue>(result));
+        var result = new List<DynValue>(arr.Count);
+        for (int i = 0; i < arr.Count; i++)
+            result.Add(PrependField("_rank", DynValue.Integer(ranks[i]), arr[i]));
+
+        return DynValue.Array(result);
     }
 
     /// <summary>

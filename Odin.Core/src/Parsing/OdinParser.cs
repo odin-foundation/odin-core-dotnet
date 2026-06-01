@@ -215,6 +215,12 @@ namespace Odin.Core.Parsing
                         ParseAssignment(state, inMetadata, metadata, assignments, modifiers, arrayIndices);
                         break;
 
+                    // A bare `= value` after a section header assigns the value to the
+                    // header path itself (e.g. {.first} = %find ...).
+                    case TokenType.Equals when !inMetadata && state.CurrentHeader != null:
+                        ParseHeaderSelfAssignment(state, assignments);
+                        break;
+
                     case TokenType.Directive when !inMetadata && IsBareDirectiveLine(state):
                         ParseBareDirective(state, assignments);
                         break;
@@ -887,6 +893,40 @@ namespace Odin.Core.Parsing
             }
         }
 
+        // Parse a `= value` line whose target is the current section header path.
+        private static void ParseHeaderSelfAssignment(
+            ParserState state, OrderedMap<string, OdinValue> assignments)
+        {
+            state.Advance(); // consume '='
+
+            var modsResult = ValueParser.ParseModifiers(state.Tokens, state.Pos);
+            var mods = modsResult.Modifiers;
+            state.Pos += modsResult.Consumed;
+
+            if (state.IsAtEnd || state.CurrentToken.TokenType == TokenType.Newline)
+            {
+                assignments.Set(state.CurrentHeader!, OdinValues.String(""));
+                return;
+            }
+
+            var valueResult = ValueParser.ParseValue(state.Tokens, state.Pos);
+            OdinValue value = valueResult.Value;
+            state.Pos += valueResult.Consumed;
+
+            if (mods.HasAny)
+                value = value.WithModifiers(mods);
+
+            // Skip remaining tokens on the line.
+            while (!state.IsAtEnd &&
+                   state.CurrentToken.TokenType != TokenType.Newline &&
+                   state.CurrentToken.TokenType != TokenType.Header)
+            {
+                state.Advance();
+            }
+
+            assignments.Set(state.CurrentHeader!, value);
+        }
+
         // ─────────────────────────────────────────────────────────────────────
         // Table data parsing
         // ─────────────────────────────────────────────────────────────────────
@@ -1119,94 +1159,14 @@ namespace Odin.Core.Parsing
                     continue;
                 }
 
-                // Check if this line is an assignment rather than tabular data
+                // An assignment line ends the array block; hand it back to the main
+                // loop. With data rows already consumed it restores the outer header
+                // context; with none it stays on the array header so field mappings
+                // (e.g. transform segments) attach to it.
                 if (state.IsAssignmentLine())
                 {
-                    string fieldName = state.Advance().Value;
-                    state.Advance(); // consume '='
-
-                    OdinValue val;
-                    int consumed;
-                    try
-                    {
-                        var result = ValueParser.ParseValue(state.Tokens, state.Pos);
-                        val = result.Value;
-                        consumed = result.Consumed;
-                    }
-                    catch (OdinParseException)
-                    {
-                        // Skip to end of line on error
-                        while (!state.IsAtEnd &&
-                               state.CurrentToken.TokenType != TokenType.Newline &&
-                               state.CurrentToken.TokenType != TokenType.Header)
-                        {
-                            state.Advance();
-                        }
-                        continue;
-                    }
-                    state.Pos += consumed;
-
-                    string fullKey = string.Format(CultureInfo.InvariantCulture, "{0}[].{1}", baseName, fieldName);
-
-                    // Collect directives
-                    var directives = new List<OdinDirective>();
-                    if (val.Directives != null)
-                    {
-                        for (int di = 0; di < val.Directives.Count; di++)
-                            directives.Add(val.Directives[di]);
-                    }
-
-                    while (!state.IsAtEnd)
-                    {
-                        var t = state.CurrentToken;
-                        if (t.TokenType == TokenType.Newline || t.TokenType == TokenType.Header ||
-                            t.TokenType == TokenType.Comment || t.TokenType == TokenType.DocumentSeparator)
-                            break;
-
-                        if (t.TokenType == TokenType.Directive)
-                        {
-                            string dirName = t.Value;
-                            state.Advance();
-                            DirectiveValue? dirVal = null;
-                            if (!state.IsAtEnd)
-                            {
-                                var next = state.CurrentToken;
-                                if (next.TokenType != TokenType.Newline &&
-                                    next.TokenType != TokenType.Header &&
-                                    next.TokenType != TokenType.Directive &&
-                                    next.TokenType != TokenType.Comment &&
-                                    next.TokenType != TokenType.DocumentSeparator)
-                                {
-                                    string sv = next.Value;
-                                    state.Advance();
-                                    double numVal;
-                                    if (double.TryParse(sv, NumberStyles.Float, CultureInfo.InvariantCulture, out numVal))
-                                        dirVal = DirectiveValue.FromNumber(numVal);
-                                    else
-                                        dirVal = DirectiveValue.FromString(sv);
-                                }
-                            }
-                            directives.Add(new OdinDirective(dirName, dirVal));
-                        }
-                        else
-                        {
-                            state.Advance();
-                        }
-                    }
-
-                    if (directives.Count > 0)
-                        val = val.WithDirectives(directives);
-
-                    assignments.Set(fullKey, val);
-
-                    // Skip to end of line
-                    while (!state.IsAtEnd &&
-                           state.CurrentToken.TokenType != TokenType.Newline &&
-                           state.CurrentToken.TokenType != TokenType.Header)
-                    {
-                        state.Advance();
-                    }
-                    continue;
+                    state.CurrentHeader = rowIndex > 0 ? null : namePart;
+                    return;
                 }
 
                 // Collect values on this line

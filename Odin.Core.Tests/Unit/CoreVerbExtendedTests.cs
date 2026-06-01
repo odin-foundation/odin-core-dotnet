@@ -320,7 +320,7 @@ public class CoreVerbExtendedTests
     [Fact] public void PadRight_SpaceChar() => Assert.Equal("hi   ", Invoke("padRight", S("hi"), I(5), S(" ")).AsString());
 
     [Fact] public void Pad_AlreadyWide() => Assert.Equal("hello", Invoke("pad", S("hello"), I(3), S("*")).AsString());
-    [Fact] public void Pad_OddPadding() => Assert.Equal("-ab--", Invoke("pad", S("ab"), I(5), S("-")).AsString());
+    [Fact] public void Pad_OddPadding() => Assert.Equal("ab---", Invoke("pad", S("ab"), I(5), S("-")).AsString());
     [Fact] public void Pad_EmptyString() => Assert.Equal("xxxx", Invoke("pad", S(""), I(4), S("x")).AsString());
 
     // =========================================================================
@@ -480,10 +480,10 @@ public class CoreVerbExtendedTests
     public void Match_HappyPath()
     {
         var result = Invoke("match", S("hello world"), S("w\\w+"));
-        Assert.Equal("world", result.AsString());
+        Assert.True(result.AsBool());
     }
 
-    [Fact] public void Match_NoMatch() => Assert.True(Invoke("match", S("hello"), S("xyz")).IsNull);
+    [Fact] public void Match_NoMatch() => Assert.False(Invoke("match", S("hello"), S("xyz")).AsBool());
     [Fact] public void Match_Null() => Assert.True(Invoke("match", Null(), S("x")).IsNull);
 
     // =========================================================================
@@ -516,8 +516,8 @@ public class CoreVerbExtendedTests
     // String verbs — wrap / center
     // =========================================================================
 
-    [Fact] public void Wrap_WithPrefixSuffix() => Assert.Equal("<hello>", Invoke("wrap", S("hello"), S("<"), S(">")).AsString());
-    [Fact] public void Wrap_SameChar() => Assert.Equal("'hello'", Invoke("wrap", S("hello"), S("'")).AsString());
+    [Fact] public void Wrap_WordWraps() => Assert.Equal("the quick\nbrown fox", Invoke("wrap", S("the quick brown fox"), I(10)).AsString());
+    [Fact] public void Wrap_KeepsShort() => Assert.Equal("hello", Invoke("wrap", S("hello"), I(20)).AsString());
     [Fact] public void Wrap_Null() => Assert.True(Invoke("wrap", Null(), S("<"), S(">")).IsNull);
 
     [Fact] public void Center_AlreadyWide() => Assert.Equal("hello", Invoke("center", S("hello"), I(3), S("-")).AsString());
@@ -541,7 +541,7 @@ public class CoreVerbExtendedTests
 
     [Fact] public void Clean_Empty() => Assert.Equal("", Invoke("clean", S("")).AsString());
     [Fact] public void Clean_NoControlChars() => Assert.Equal("hello world", Invoke("clean", S("hello world")).AsString());
-    [Fact] public void Clean_PreservesNewlinesTabs() => Assert.Equal("a\nb\tc\r", Invoke("clean", S("a\nb\tc\r")).AsString());
+    [Fact] public void Clean_CollapsesWhitespace() => Assert.Equal("a b c", Invoke("clean", S("a\nb\tc\r")).AsString());
     [Fact] public void Clean_RemovesNullBytes() => Assert.Equal("abcd", Invoke("clean", S("a\0b\u0001c\u0002d")).AsString());
     [Fact] public void Clean_Null() => Assert.True(Invoke("clean", Null()).IsNull);
 

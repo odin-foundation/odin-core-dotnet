@@ -553,15 +553,15 @@ public class NumericVerbExtendedTests
 
     [Fact]
     public void Interpolate_Midpoint()
-        => AssertNumeric(Invoke("interpolate", F(0.0), F(100.0), F(0.5)), 50.0, 1e-10);
+        => AssertNumeric(Invoke("interpolate", F(5.0), F(0.0), F(0.0), F(10.0), F(100.0)), 50.0, 1e-10);
 
     [Fact]
     public void Interpolate_AtStart()
-        => AssertNumeric(Invoke("interpolate", F(0.0), F(100.0), F(0.0)), 0.0, 1e-10);
+        => AssertNumeric(Invoke("interpolate", F(0.0), F(0.0), F(0.0), F(10.0), F(100.0)), 0.0, 1e-10);
 
     [Fact]
     public void Interpolate_AtEnd()
-        => AssertNumeric(Invoke("interpolate", F(0.0), F(100.0), F(1.0)), 100.0, 1e-10);
+        => AssertNumeric(Invoke("interpolate", F(10.0), F(0.0), F(0.0), F(10.0), F(100.0)), 100.0, 1e-10);
 
     [Fact]
     public void Interpolate_MissingArgs()
@@ -671,21 +671,18 @@ public class NumericVerbExtendedTests
     // .NET zscore(value, mean, stddev) -- 3 scalar args
     // =========================================================================
 
+    // zscore(value, array): mean and population stddev from the array; [1,5] → mean 3, stddev 2.
     [Fact]
     public void Zscore_AtMean()
-        => AssertNumeric(Invoke("zscore", F(3.0), F(3.0), F(2.0)), 0.0, 1e-10);
+        => AssertNumeric(Invoke("zscore", F(3.0), Arr(F(1.0), F(5.0))), 0.0, 1e-10);
 
     [Fact]
     public void Zscore_AboveMean()
-    {
-        // zscore(value=5, mean=3, stddev=2) = (5-3)/2 = 1.0
-        var result = Invoke("zscore", F(5.0), F(3.0), F(2.0));
-        AssertNumeric(result, 1.0, 1e-10);
-    }
+        => AssertNumeric(Invoke("zscore", F(5.0), Arr(F(1.0), F(5.0))), 1.0, 1e-10);
 
     [Fact]
     public void Zscore_AllSame()
-        => Assert.True(Invoke("zscore", F(5.0), F(5.0), F(0.0)).IsNull);
+        => Assert.True(Invoke("zscore", F(5.0), Arr(F(5.0), F(5.0))).IsNull);
 
     // =========================================================================
     // 18. NUMERIC EDGE CASES

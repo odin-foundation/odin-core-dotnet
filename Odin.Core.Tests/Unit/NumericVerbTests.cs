@@ -597,26 +597,23 @@ public class NumericVerbTests
     // 19. ZSCORE
     // =========================================================================
 
+    // zscore(value, array): mean and population stddev from the array; [3,7] → mean 5, stddev 2.
     [Fact]
     public void Zscore_AtMean()
     {
-        // zscore(value, mean, stddev)
-        var result = Invoke("zscore", F(5.0), F(5.0), F(2.0));
-        AssertNumeric(result, 0.0, 1e-10);
+        AssertNumeric(Invoke("zscore", F(5.0), Arr(F(3.0), F(7.0))), 0.0, 1e-10);
     }
 
     [Fact]
     public void Zscore_AboveMean()
     {
-        var result = Invoke("zscore", F(7.0), F(5.0), F(2.0));
-        AssertNumeric(result, 1.0, 1e-10);
+        AssertNumeric(Invoke("zscore", F(7.0), Arr(F(3.0), F(7.0))), 1.0, 1e-10);
     }
 
     [Fact]
     public void Zscore_ZeroStddev()
     {
-        var result = Invoke("zscore", F(5.0), F(5.0), F(0.0));
-        Assert.True(result.IsNull);
+        Assert.True(Invoke("zscore", F(5.0), Arr(F(5.0), F(5.0))).IsNull);
     }
 
     // =========================================================================
@@ -628,26 +625,23 @@ public class NumericVerbTests
     [Fact] public void Clamp_AboveMax() => AssertNumeric(Invoke("clamp", F(15.0), F(0.0), F(10.0)), 10.0, 1e-10);
     [Fact] public void Clamp_MissingArgs() => Assert.True(Invoke("clamp", F(5.0), F(0.0)).IsNull);
 
+    // interpolate(x, x1, y1, x2, y2): linear interpolation between (x1,y1) and (x2,y2).
     [Fact]
     public void Interpolate_Midpoint()
     {
-        // interpolate(a, b, t) = a + (b-a)*t
-        var result = Invoke("interpolate", F(0.0), F(100.0), F(0.5));
-        AssertNumeric(result, 50.0, 1e-10);
+        AssertNumeric(Invoke("interpolate", F(5.0), F(0.0), F(0.0), F(10.0), F(100.0)), 50.0, 1e-10);
     }
 
     [Fact]
     public void Interpolate_AtStart()
     {
-        var result = Invoke("interpolate", F(0.0), F(100.0), F(0.0));
-        AssertNumeric(result, 0.0, 1e-10);
+        AssertNumeric(Invoke("interpolate", F(0.0), F(0.0), F(0.0), F(10.0), F(100.0)), 0.0, 1e-10);
     }
 
     [Fact]
     public void Interpolate_AtEnd()
     {
-        var result = Invoke("interpolate", F(0.0), F(100.0), F(1.0));
-        AssertNumeric(result, 100.0, 1e-10);
+        AssertNumeric(Invoke("interpolate", F(10.0), F(0.0), F(0.0), F(10.0), F(100.0)), 100.0, 1e-10);
     }
 
     [Fact] public void Interpolate_MissingArgs() => Assert.True(Invoke("interpolate", F(0.0), F(100.0)).IsNull);

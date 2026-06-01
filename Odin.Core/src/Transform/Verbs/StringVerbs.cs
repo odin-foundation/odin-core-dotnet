@@ -289,17 +289,12 @@ internal static class StringVerbs
 
     private static DynValue Pad(DynValue[] args, VerbContext ctx)
     {
-        // pad: center-pad (left+right) to width
-        if (args.Length < 2) return args.Length > 0 ? args[0] : DynValue.Null();
-        if (args[0].IsNull) return DynValue.Null();
+        // pad: right-pad to length with a fill character.
+        if (args.Length < 3) return DynValue.Null();
         string s = ToStr(args[0]);
-        int width = ToInt(args[1]);
-        char padChar = args.Length >= 3 ? GetPadChar(args[2]) : ' ';
-        if (s.Length >= width) return DynValue.String(s);
-        int totalPad = width - s.Length;
-        int leftPad = totalPad / 2;
-        int rightPad = totalPad - leftPad;
-        return DynValue.String(new string(padChar, leftPad) + s + new string(padChar, rightPad));
+        int len = ToInt(args[1]);
+        char padChar = GetPadChar(args[2]);
+        return DynValue.String(s.Length >= len ? s : s + new string(padChar, len - s.Length));
     }
 
     private static char GetPadChar(DynValue v)
@@ -571,9 +566,7 @@ internal static class StringVerbs
         try
         {
             var regex = CreateRegex(pattern);
-            var m = regex.Match(s);
-            if (!m.Success) return DynValue.Null();
-            return DynValue.String(m.Value);
+            return DynValue.Bool(regex.IsMatch(s));
         }
         catch (Exception)
         {
@@ -587,20 +580,15 @@ internal static class StringVerbs
         if (args[0].IsNull) return DynValue.Null();
         string s = ToStr(args[0]);
         string pattern = ToStr(args[1]);
+        int groupIndex = args.Length >= 3 ? ToInt(args[2]) : 0;
         try
         {
             var regex = CreateRegex(pattern);
             var m = regex.Match(s);
             if (!m.Success) return DynValue.Null();
-            if (m.Groups.Count > 1)
-            {
-                // Return capture groups as array
-                var items = new List<DynValue>();
-                for (int i = 1; i < m.Groups.Count; i++)
-                    items.Add(m.Groups[i].Success ? DynValue.String(m.Groups[i].Value) : DynValue.Null());
-                return DynValue.Array(items);
-            }
-            return DynValue.String(m.Value);
+            if (groupIndex < 0 || groupIndex >= m.Groups.Count) return DynValue.Null();
+            var g = m.Groups[groupIndex];
+            return g.Success ? DynValue.String(g.Value) : DynValue.Null();
         }
         catch (Exception)
         {
@@ -660,12 +648,31 @@ internal static class StringVerbs
 
     private static DynValue Wrap(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length < 2) return args.Length > 0 ? args[0] : DynValue.Null();
-        if (args[0].IsNull) return DynValue.Null();
+        // wrap: word-wrap text to a column width, joining lines with newlines.
+        if (args.Length < 2) return DynValue.Null();
         string s = ToStr(args[0]);
-        string prefix = ToStr(args[1]);
-        string suffix = args.Length >= 3 ? ToStr(args[2]) : prefix;
-        return DynValue.String(prefix + s + suffix);
+        int width = ToInt(args[1]);
+        if (width <= 0) return DynValue.Null();
+        if (s.Length <= width) return DynValue.String(s);
+
+        var words = Regex.Split(s, "\\s+");
+        var lines = new List<string>();
+        string current = "";
+        foreach (var word in words)
+        {
+            if (word.Length == 0) continue;
+            if (current.Length == 0)
+                current = word;
+            else if (current.Length + 1 + word.Length <= width)
+                current += " " + word;
+            else
+            {
+                lines.Add(current);
+                current = word;
+            }
+        }
+        if (current.Length > 0) lines.Add(current);
+        return DynValue.String(string.Join("\n", lines));
     }
 
     private static DynValue Center(DynValue[] args, VerbContext ctx)
@@ -725,15 +732,13 @@ internal static class StringVerbs
         if (args.Length < 1) return DynValue.Null();
         if (args[0].IsNull) return DynValue.Null();
         string s = ToStr(args[0]);
-        var sb = new StringBuilder(s.Length);
-        for (int i = 0; i < s.Length; i++)
-        {
-            char c = s[i];
-            // Keep printable characters (space and above), tabs, newlines, carriage returns
-            if (c >= ' ' || c == '\t' || c == '\n' || c == '\r')
-                sb.Append(c);
-        }
-        return DynValue.String(sb.ToString());
+        // Strip ASCII control characters (except tab/newline/CR) and DEL.
+        string cleaned = Regex.Replace(s, "[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]", "");
+        // Normalize Unicode whitespace to regular spaces.
+        cleaned = Regex.Replace(cleaned, "[\\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000]", " ");
+        // Collapse runs of whitespace and trim.
+        cleaned = Regex.Replace(cleaned, "\\s+", " ").Trim();
+        return DynValue.String(cleaned);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

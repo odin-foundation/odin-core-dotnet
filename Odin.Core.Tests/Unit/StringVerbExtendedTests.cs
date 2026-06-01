@@ -200,17 +200,12 @@ public class StringVerbExtendedTests
         => Assert.Equal("xxxx", Invoke("pad", S(""), I(4), S("x")).AsString());
 
     [Fact]
-    public void Pad_CenterEvenPadding()
-        => Assert.Equal("--hi--", Invoke("pad", S("hi"), I(6), S("-")).AsString());
+    public void Pad_RightPadsEven()
+        => Assert.Equal("hi----", Invoke("pad", S("hi"), I(6), S("-")).AsString());
 
     [Fact]
-    public void Pad_TooFewArgs_DefaultsPadChar()
-    {
-        // .NET pad with 2 args uses default space pad
-        var result = Invoke("pad", S("hi"), I(6));
-        Assert.NotNull(result);
-        Assert.Equal(6, result.AsString()!.Length);
-    }
+    public void Pad_TooFewArgs_ReturnsNull()
+        => Assert.True(Invoke("pad", S("hi"), I(6)).IsNull);
 
     // =========================================================================
     // truncate extended edge cases
@@ -458,16 +453,16 @@ public class StringVerbExtendedTests
 
     // =========================================================================
     // match extended edge cases
-    // In .NET, match returns the first matched string (not bool)
+    // match tests whether the pattern is found, returning a boolean.
     // =========================================================================
 
     [Fact]
     public void Match_DigitPattern()
-        => Assert.Equal("123", Invoke("match", S("abc123def"), S("\\d+")).AsString());
+        => Assert.True(Invoke("match", S("abc123def"), S("\\d+")).AsBool());
 
     [Fact]
-    public void Match_NotFoundReturnsNull()
-        => Assert.True(Invoke("match", S("abc"), S("\\d+")).IsNull);
+    public void Match_NotFoundReturnsFalse()
+        => Assert.False(Invoke("match", S("abc"), S("\\d+")).AsBool());
 
     [Fact]
     public void Match_NullReturnsNull()
@@ -479,11 +474,11 @@ public class StringVerbExtendedTests
 
     [Fact]
     public void Match_FullPattern()
-        => Assert.Equal("hello", Invoke("match", S("hello"), S("^hello$")).AsString());
+        => Assert.True(Invoke("match", S("hello"), S("^hello$")).AsBool());
 
     [Fact]
     public void Match_WordBoundary()
-        => Assert.Equal("world", Invoke("match", S("hello world"), S("world")).AsString());
+        => Assert.True(Invoke("match", S("hello world"), S("world")).AsBool());
 
     // =========================================================================
     // matches extended edge cases
@@ -513,12 +508,13 @@ public class StringVerbExtendedTests
     [Fact]
     public void Extract_WithGroups()
     {
-        var result = Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})"));
-        var arr = result.AsArray()!;
-        Assert.Equal(3, arr.Count);
-        Assert.Equal("2024", arr[0].AsString());
-        Assert.Equal("01", arr[1].AsString());
-        Assert.Equal("15", arr[2].AsString());
+        // Group index selects a capture group; 0 (default) is the whole match.
+        Assert.Equal("2024-01-15",
+            Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})")).AsString());
+        Assert.Equal("2024",
+            Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})"), I(1)).AsString());
+        Assert.Equal("15",
+            Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})"), I(3)).AsString());
     }
 
     [Fact]
@@ -536,11 +532,10 @@ public class StringVerbExtendedTests
     [Fact]
     public void Extract_EmailGroups()
     {
-        var result = Invoke("extract", S("user@domain.com"), S("(.+)@(.+)"));
-        var arr = result.AsArray()!;
-        Assert.Equal(2, arr.Count);
-        Assert.Equal("user", arr[0].AsString());
-        Assert.Equal("domain.com", arr[1].AsString());
+        Assert.Equal("user",
+            Invoke("extract", S("user@domain.com"), S("(.+)@(.+)"), I(1)).AsString());
+        Assert.Equal("domain.com",
+            Invoke("extract", S("user@domain.com"), S("(.+)@(.+)"), I(2)).AsString());
     }
 
     // =========================================================================
@@ -620,24 +615,20 @@ public class StringVerbExtendedTests
     // =========================================================================
 
     [Fact]
-    public void Wrap_SingleQuotes()
-        => Assert.Equal("'hello'", Invoke("wrap", S("hello"), S("'")).AsString());
+    public void Wrap_WordWrapsAtWidth()
+        => Assert.Equal("the quick\nbrown fox", Invoke("wrap", S("the quick brown fox"), I(10)).AsString());
 
     [Fact]
-    public void Wrap_Brackets()
-        => Assert.Equal("[hello]", Invoke("wrap", S("hello"), S("["), S("]")).AsString());
+    public void Wrap_KeepsShortText()
+        => Assert.Equal("hello", Invoke("wrap", S("hello"), I(20)).AsString());
 
     [Fact]
-    public void Wrap_AngleBrackets()
-        => Assert.Equal("<hello>", Invoke("wrap", S("hello"), S("<"), S(">")).AsString());
+    public void Wrap_NarrowWidthBreaksEachWord()
+        => Assert.Equal("aa\nbb\ncc", Invoke("wrap", S("aa bb cc"), I(2)).AsString());
 
     [Fact]
-    public void Wrap_EmptyInput()
-        => Assert.Equal("\"\"", Invoke("wrap", S(""), S("\"")).AsString());
-
-    [Fact]
-    public void Wrap_NullPassthrough()
-        => Assert.True(Invoke("wrap", Null(), S("\"")).IsNull);
+    public void Wrap_ZeroWidthReturnsNull()
+        => Assert.True(Invoke("wrap", S("hello"), I(0)).IsNull);
 
     // =========================================================================
     // center extended edge cases
@@ -696,8 +687,8 @@ public class StringVerbExtendedTests
         => Assert.Equal("hello world", Invoke("clean", S("hello world")).AsString());
 
     [Fact]
-    public void Clean_PreservesNewlinesTabs()
-        => Assert.Equal("a\nb\tc\r", Invoke("clean", S("a\nb\tc\r")).AsString());
+    public void Clean_CollapsesWhitespaceRuns()
+        => Assert.Equal("a b c", Invoke("clean", S("a\nb\tc\r")).AsString());
 
     [Fact]
     public void Clean_IntegerCoerces()

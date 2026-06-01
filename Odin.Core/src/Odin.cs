@@ -29,6 +29,8 @@ public static class Odin
     {
         // Wire source parsers
         TransformEngine.SourceParser = ParseSourceFormat;
+        TransformEngine.OdinSourceParser = text =>
+            TransformEngine.OdinDocumentToDynValue(Parse(text));
 
         // Wire verb registry
         TransformEngine.VerbRegistry = Transform.Verbs.VerbRegistry.Instance.ToDictionary();

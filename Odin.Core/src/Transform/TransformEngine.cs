@@ -42,6 +42,9 @@ namespace Odin.Core.Transform
 
         /// <summary>Missing-data policy for lookup misses (fail/warn/skip/default; default silent null).</summary>
         public string? OnMissing { get; set; }
+
+        /// <summary>Named sequence counters, shared across verb calls for the run.</summary>
+        public Dictionary<string, long> SequenceCounters { get; set; } = new Dictionary<string, long>();
     }
 
     /// <summary>
@@ -122,6 +125,12 @@ namespace Odin.Core.Transform
         /// <summary>Target configuration (format, options).</summary>
         public TargetConfig? Target;
 
+        /// <summary>Named sequence counters, persisted across all verb calls.</summary>
+        public Dictionary<string, long> SequenceCounters;
+
+        /// <summary>Whether strict verb-argument type checking is enabled.</summary>
+        public bool StrictTypes;
+
         public ExecContext()
         {
             Source = DynValue.Null();
@@ -136,6 +145,7 @@ namespace Odin.Core.Transform
             GlobalOutput = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
             FieldModifiers = new Dictionary<string, OdinModifiers>();
             SourceFormat = "";
+            SequenceCounters = new Dictionary<string, long>();
         }
     }
 
@@ -150,6 +160,12 @@ namespace Odin.Core.Transform
         /// returns a parsed <see cref="DynValue"/> or null on failure.
         /// </summary>
         public static Func<string, string, DynValue?>? SourceParser { get; set; }
+
+        /// <summary>
+        /// Parser for ODIN source text. Reconstructs the nested object/array tree
+        /// from a parsed document's dotted/indexed assignment paths.
+        /// </summary>
+        public static Func<string, DynValue>? OdinSourceParser { get; set; }
 
         /// <summary>
         /// Delegate type for output formatters. Accepts a <see cref="DynValue"/>, format name,
@@ -334,6 +350,12 @@ namespace Odin.Core.Transform
                     if (parts.Length > 0) srcFmt = parts[0];
                 }
 
+                if (srcFmt == "odin" && OdinSourceParser != null)
+                {
+                    var parsed = OdinSourceParser(source.AsString()!);
+                    return Execute(transform, parsed);
+                }
+
                 if (srcFmt != null && IsParseableFormat(srcFmt) && SourceParser != null)
                 {
                     var parsed = SourceParser(source.AsString()!, srcFmt);
@@ -387,7 +409,7 @@ namespace Odin.Core.Transform
 
             // 5. Format the output
             string formatted = FormatOutput(output, transform.Target.Format, transform.Target.Options,
-                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces, ctx.Errors.Add);
+                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces, ctx.Errors.Add, ctx.Warnings.Add);
 
             return new TransformResult
             {
@@ -607,7 +629,7 @@ namespace Odin.Core.Transform
             }
 
             string formatted = FormatOutput(output, transform.Target.Format, transform.Target.Options,
-                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces, ctx.Errors.Add);
+                transform.Segments, ctx.FieldModifiers, transform.Target.Namespaces, ctx.Errors.Add, ctx.Warnings.Add);
 
             return new TransformResult
             {
@@ -721,6 +743,7 @@ namespace Odin.Core.Transform
                 FieldModifiers = new Dictionary<string, OdinModifiers>(),
                 SourceFormat = sourceFormat,
                 Target = transform.Target,
+                StrictTypes = transform.StrictTypes,
             };
         }
 
@@ -1151,6 +1174,21 @@ namespace Odin.Core.Transform
                     ctx.Errors.RemoveRange(errorsBefore, ctx.Errors.Count - errorsBefore);
 
                 val = ApplyMappingDirectives(val, mapping.Directives, ctx.SourceFormat, mapping.Expression);
+
+                // T007: a format-specific modifier used with an incompatible target
+                // format is ignored and reported as a warning.
+                string targetFormat = ctx.Target?.Format ?? "";
+                foreach (var dir in mapping.Directives)
+                {
+                    if (!IsModifierCompatible(dir.Name, targetFormat))
+                        ctx.Warnings.Add(new TransformWarning
+                        {
+                            Code = TransformErrorCode.InvalidModifier.Code(),
+                            Message = "Modifier ':" + dir.Name + "' is not applicable to format '"
+                                + targetFormat + "' and will be ignored",
+                            Path = mapping.Target,
+                        });
+                }
 
                 // Validation modifiers: :validate / :enum / :range (honors onValidation policy).
                 if (!ValidateFieldValue(val, mapping, ctx)) return;
@@ -1692,6 +1730,18 @@ namespace Odin.Core.Transform
             for (int i = 0; i < call.Args.Count; i++)
                 evaluatedArgs[i] = EvaluateVerbArg(call.Args[i], ctx, currentSource, currentOutput);
 
+            // T002: strict argument type checking.
+            if (ctx.StrictTypes && !call.IsCustom)
+            {
+                var typeError = ValidateVerbArgTypes(call.Verb, evaluatedArgs);
+                if (typeError != null)
+                    throw new CodedTransformException(new TransformError
+                    {
+                        Code = TransformErrorCode.InvalidVerbArgs.Code(),
+                        Message = "Type error in %" + call.Verb + ": " + typeError,
+                    });
+            }
+
             // Look up verb
             if (!ctx.Verbs.TryGetValue(call.Verb, out var verbFn))
             {
@@ -1713,6 +1763,7 @@ namespace Odin.Core.Transform
                 Tables = ctx.Tables,
                 GlobalOutput = ctx.GlobalOutput,
                 OnMissing = OnMissingPolicy(ctx),
+                SequenceCounters = ctx.SequenceCounters,
             };
 
             var result = verbFn(evaluatedArgs, verbCtx);
@@ -1732,6 +1783,89 @@ namespace Odin.Core.Transform
             }
 
             return result;
+        }
+
+        // Modifiers that only apply to specific output formats. Using them with any
+        // other format produces a T007 warning.
+        private static readonly Dictionary<string, string[]> FormatSpecificModifiers = new()
+        {
+            ["pos"] = new[] { "fixed-width", "fwf" },
+            ["len"] = new[] { "fixed-width", "fwf" },
+            ["leftPad"] = new[] { "fixed-width", "fwf" },
+            ["rightPad"] = new[] { "fixed-width", "fwf" },
+            ["truncate"] = new[] { "fixed-width", "fwf" },
+            ["element"] = new[] { "xml" },
+            ["attr"] = new[] { "xml" },
+            ["ns"] = new[] { "xml" },
+            ["cdata"] = new[] { "xml" },
+            ["omitEmpty"] = new[] { "xml", "json" },
+            ["raw"] = new[] { "json" },
+        };
+
+        private static bool IsModifierCompatible(string modifier, string format)
+        {
+            if (!FormatSpecificModifiers.TryGetValue(modifier, out var allowed)) return true;
+            return Array.IndexOf(allowed, format) >= 0;
+        }
+
+        // Expected argument types per verb for strict type checking. Verbs absent
+        // from the table accept any argument types.
+        private static readonly Dictionary<string, string[]> VerbArgTypes = new()
+        {
+            ["abs"] = new[] { "number" }, ["round"] = new[] { "number", "integer" },
+            ["floor"] = new[] { "number" }, ["ceil"] = new[] { "number" },
+            ["trunc"] = new[] { "number" }, ["sign"] = new[] { "number" },
+            ["negate"] = new[] { "number" }, ["add"] = new[] { "number", "number" },
+            ["subtract"] = new[] { "number", "number" }, ["multiply"] = new[] { "number", "number" },
+            ["divide"] = new[] { "number", "number" }, ["mod"] = new[] { "number", "number" },
+            ["pow"] = new[] { "number", "number" }, ["sqrt"] = new[] { "number" },
+            ["log"] = new[] { "number", "number" }, ["ln"] = new[] { "number" },
+            ["log10"] = new[] { "number" }, ["exp"] = new[] { "number" },
+            ["clamp"] = new[] { "number", "number", "number" },
+            ["isFinite"] = new[] { "number" }, ["isNaN"] = new[] { "number" },
+            ["toRadians"] = new[] { "number" }, ["toDegrees"] = new[] { "number" },
+        };
+
+        // Returns a description of the first argument type mismatch, or null when valid.
+        private static string? ValidateVerbArgTypes(string verb, DynValue[] args)
+        {
+            if (!VerbArgTypes.TryGetValue(verb, out var expected)) return null;
+            for (int i = 0; i < args.Length && i < expected.Length; i++)
+            {
+                string actual = DynTypeName(args[i]);
+                if (!StrictTypeMatches(actual, expected[i]))
+                    return "Arg " + (i + 1) + ": expected " + expected[i] + ", got " + actual;
+            }
+            return null;
+        }
+
+        private static string DynTypeName(DynValue v) => v.Type switch
+        {
+            DynValueType.Null => "null",
+            DynValueType.Bool => "boolean",
+            DynValueType.Integer => "integer",
+            DynValueType.Float or DynValueType.FloatRaw => "number",
+            DynValueType.Currency or DynValueType.CurrencyRaw => "currency",
+            DynValueType.Percent => "percent",
+            DynValueType.String => "string",
+            DynValueType.Array => "array",
+            DynValueType.Object => "object",
+            DynValueType.Date => "date",
+            DynValueType.Timestamp => "timestamp",
+            DynValueType.Time => "time",
+            DynValueType.Duration => "duration",
+            DynValueType.Reference => "reference",
+            DynValueType.Binary => "binary",
+            _ => "any",
+        };
+
+        private static bool StrictTypeMatches(string actual, string expected)
+        {
+            if (expected == "any") return true;
+            if (actual == "null") return true;
+            if (expected == "number")
+                return actual == "number" || actual == "integer" || actual == "currency";
+            return actual == expected;
         }
 
         private static DynValue EvaluateVerbArg(VerbArg arg, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
@@ -2277,10 +2411,15 @@ namespace Odin.Core.Transform
             if (parts.Count == 0) { output = value; return; }
             if (parts.Count == 1) { SetSingleField(ref output, parts[0], value); return; }
 
-            // Navigate to parent, creating intermediates
+            // Navigate to parent, creating intermediates. A following index part
+            // means the current slot must be an array rather than an object.
             var current = output;
             for (int i = 0; i < parts.Count - 1; i++)
-                current = EnsureAndDescend(ref current, parts[i]);
+            {
+                bool nextIsIndex = parts[i + 1].Type == SetPathPartType.ArrayIndex
+                    && string.IsNullOrEmpty(parts[i + 1].Name);
+                current = EnsureAndDescend(ref current, parts[i], nextIsIndex);
+            }
 
             SetSingleField(ref current, parts[parts.Count - 1], value);
 
@@ -2318,17 +2457,8 @@ namespace Odin.Core.Transform
                 else
                 {
                     int bStart = seg.IndexOf('[');
-                    int bEnd = seg.IndexOf(']');
-                    if (bStart >= 0 && bEnd > bStart)
-                    {
-                        var name = seg.Substring(0, bStart);
-                        var idxStr = seg.Substring(bStart + 1, bEnd - bStart - 1);
-                        if (int.TryParse(idxStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
-                        {
-                            parts.Add(new SetPathPart { Type = SetPathPartType.ArrayIndex, Name = name, Index = idx });
-                            continue;
-                        }
-                    }
+                    if (bStart >= 0 && AddIndexedParts(seg, bStart, parts))
+                        continue;
                     parts.Add(new SetPathPart { Type = SetPathPartType.Field, Name = seg });
                 }
             }
@@ -2336,8 +2466,45 @@ namespace Odin.Core.Transform
             return parts;
         }
 
+        // Emit indexed parts for a segment of the form name[i][j]...; the first
+        // bracket binds to the name, subsequent brackets are bare array indices.
+        private static bool AddIndexedParts(string seg, int bStart, List<SetPathPart> parts)
+        {
+            string name = seg.Substring(0, bStart);
+            var indices = new List<int>();
+            int i = bStart;
+            while (i < seg.Length && seg[i] == '[')
+            {
+                int bEnd = seg.IndexOf(']', i);
+                if (bEnd < 0) return false;
+                var idxStr = seg.Substring(i + 1, bEnd - i - 1);
+                if (!int.TryParse(idxStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
+                    return false;
+                indices.Add(idx);
+                i = bEnd + 1;
+            }
+            if (i != seg.Length || indices.Count == 0) return false;
+
+            parts.Add(new SetPathPart { Type = SetPathPartType.ArrayIndex, Name = name, Index = indices[0] });
+            for (int k = 1; k < indices.Count; k++)
+                parts.Add(new SetPathPart { Type = SetPathPartType.ArrayIndex, Name = "", Index = indices[k] });
+            return true;
+        }
+
         private static void SetSingleField(ref DynValue obj, SetPathPart part, DynValue value)
         {
+            // Bare [i] index assigns directly into the host array.
+            if (part.Type == SetPathPartType.ArrayIndex && string.IsNullOrEmpty(part.Name))
+            {
+                var hostArr = obj.AsArray();
+                if (hostArr != null)
+                {
+                    while (hostArr.Count <= part.Index) hostArr.Add(DynValue.Null());
+                    hostArr[part.Index] = value;
+                }
+                return;
+            }
+
             var entries = obj.AsObject();
             if (entries == null) return;
 
@@ -2412,8 +2579,23 @@ namespace Odin.Core.Transform
             }
         }
 
-        private static DynValue EnsureAndDescend(ref DynValue current, SetPathPart part)
+        private static DynValue EnsureAndDescend(ref DynValue current, SetPathPart part, bool childIsIndex = false)
         {
+            // A bare [i] index descends into the current array directly.
+            if (part.Type == SetPathPartType.ArrayIndex && string.IsNullOrEmpty(part.Name))
+            {
+                var hostArr = current.AsArray();
+                if (hostArr != null)
+                {
+                    while (hostArr.Count <= part.Index)
+                        hostArr.Add(childIsIndex
+                            ? DynValue.Array(new List<DynValue>())
+                            : DynValue.Object(new List<KeyValuePair<string, DynValue>>()));
+                    return hostArr[part.Index];
+                }
+                return current;
+            }
+
             var entries = current.AsObject();
             if (entries == null) return current;
 
@@ -2447,8 +2629,11 @@ namespace Odin.Core.Transform
                         entries.Add(new KeyValuePair<string, DynValue>(part.Name, arrVal));
                     }
 
+                    // The slot is an array when the next part indexes into it.
                     while (arr.Count <= part.Index)
-                        arr.Add(DynValue.Object(new List<KeyValuePair<string, DynValue>>()));
+                        arr.Add(childIsIndex
+                            ? DynValue.Array(new List<DynValue>())
+                            : DynValue.Object(new List<KeyValuePair<string, DynValue>>()));
                     return arr[part.Index];
                 }
                 case SetPathPartType.ArrayPush:
@@ -2671,7 +2856,15 @@ namespace Odin.Core.Transform
                 case OdinNull _: return DynValue.Null();
                 case OdinBoolean b: return DynValue.Bool(b.Value);
                 case OdinString s: return DynValue.String(s.Value);
-                case OdinInteger i: return DynValue.Integer(i.Value);
+                case OdinInteger i:
+                {
+                    // An integer literal beyond Int64 range is preserved (and parsed)
+                    // as a floating value rather than truncated to its overflowed Value.
+                    if (i.Raw != null && !long.TryParse(i.Raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
+                        && double.TryParse(i.Raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var bigD))
+                        return DynValue.Float(bigD);
+                    return DynValue.Integer(i.Value);
+                }
                 case OdinNumber n: return DynValue.Float(n.Value);
                 case OdinCurrency c: return DynValue.Currency(c.Value, c.DecimalPlaces, c.CurrencyCode);
                 case OdinPercent p: return DynValue.Percent(p.Value);
@@ -2793,10 +2986,41 @@ namespace Odin.Core.Transform
         // Output formatting
         // ─────────────────────────────────────────────────────────────────────
 
+        // T010: a fixed-width field whose pos+len extends past the declared lineWidth.
+        private static void CheckFixedWidthPositionOverflow(
+            List<TransformSegment> segments, TargetConfig config, Action<TransformWarning> onWarning)
+        {
+            if (!config.Options.TryGetValue("lineWidth", out var lwStr)
+                || !int.TryParse(lwStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out int lineWidth))
+                return;
+
+            foreach (var seg in segments)
+            {
+                foreach (var mapping in seg.Mappings)
+                {
+                    int pos = -1, len = -1;
+                    foreach (var dir in mapping.Directives)
+                    {
+                        if (dir.Name == "pos") pos = (int)(dir.Value?.AsNumber() ?? -1);
+                        else if (dir.Name == "len") len = (int)(dir.Value?.AsNumber() ?? -1);
+                    }
+                    if (pos >= 0 && len > 0 && pos + len > lineWidth)
+                        onWarning(new TransformWarning
+                        {
+                            Code = TransformErrorCode.PositionOverflow.Code(),
+                            Message = "Field at position " + pos + " with length " + len
+                                + " exceeds line width " + lineWidth,
+                            Path = mapping.Target,
+                        });
+                }
+            }
+        }
+
         private static string FormatOutput(
             DynValue output, string targetFormat, Dictionary<string, string> options,
             List<TransformSegment> segments, Dictionary<string, OdinModifiers> modifiers,
-            Dictionary<string, string>? namespaces = null, Action<TransformError>? onError = null)
+            Dictionary<string, string>? namespaces = null, Action<TransformError>? onError = null,
+            Action<TransformWarning>? onWarning = null)
         {
             // A registered custom formatter handles every format name.
             if (OutputFormatter != null)
@@ -2828,6 +3052,8 @@ namespace Odin.Core.Transform
                     return CsvFormatter.Format(output, config);
 
                 case "fixed-width":
+                    if (onWarning != null)
+                        CheckFixedWidthPositionOverflow(segments, config, onWarning);
                     return FixedWidthFormatter.FormatFromSegments(output, segments, config);
 
                 case "flat":
@@ -3300,7 +3526,7 @@ namespace Odin.Core.Transform
         /// </summary>
         /// <param name="doc">The source ODIN document.</param>
         /// <returns>A <see cref="DynValue"/> representing the document's assignment data.</returns>
-        private static DynValue OdinDocumentToDynValue(OdinDocument doc)
+        public static DynValue OdinDocumentToDynValue(OdinDocument doc)
         {
             var root = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
 

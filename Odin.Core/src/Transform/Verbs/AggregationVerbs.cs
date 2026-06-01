@@ -329,7 +329,7 @@ internal static class AggregationVerbs
         }
 
         if (count == 0) return DynValue.Null();
-        return DynValue.Float(sum / count);
+        return NumericResult(sum / count);
     }
 
     /// <summary>

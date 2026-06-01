@@ -402,6 +402,9 @@ internal static class EncodingVerbs
         {
             var seg = segments[i];
             if (string.IsNullOrEmpty(seg)) continue;
+            // Strip the leading root anchor ($ or $[...]).
+            if (i == 0 && seg == "$") continue;
+            if (i == 0 && seg.Length > 0 && seg[0] == '$') seg = seg.Substring(1);
 
             // Check for array index: segment[N]
             int bracketPos = seg.IndexOf('[');

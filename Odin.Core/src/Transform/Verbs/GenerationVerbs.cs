@@ -117,30 +117,22 @@ internal static class GenerationVerbs
     /// </summary>
     private static DynValue Sequence(DynValue[] args, VerbContext ctx)
     {
-        string name = "default";
-        if (args.Length > 0)
+        if (args.Length == 0) return DynValue.Integer(1);
+
+        string name = args[0].AsString() ?? "default";
+        long startValue = 1;
+        if (args.Length > 1)
         {
-            var n = args[0].AsString();
-            if (n != null) name = n;
+            var v = ToDouble(args[1]);
+            if (v.HasValue) startValue = (long)Math.Floor(v.Value);
         }
 
-        string key = "__seq_" + name;
-        long current = 0;
+        long current = ctx.SequenceCounters.TryGetValue(name, out var existing)
+            ? existing + 1
+            : startValue;
 
-        if (ctx.Accumulators.TryGetValue(key, out var existing))
-        {
-            var val = existing.AsInt64();
-            if (val.HasValue) current = val.Value;
-            else
-            {
-                var dVal = existing.AsDouble();
-                if (dVal.HasValue) current = (long)dVal.Value;
-            }
-        }
-
-        long result = current;
-        ctx.Accumulators[key] = DynValue.Integer(current + 1);
-        return DynValue.Integer(result);
+        ctx.SequenceCounters[name] = current;
+        return DynValue.Integer(current);
     }
 
     /// <summary>
@@ -148,22 +140,17 @@ internal static class GenerationVerbs
     /// </summary>
     private static DynValue ResetSequence(DynValue[] args, VerbContext ctx)
     {
-        string name = "default";
-        if (args.Length > 0)
-        {
-            var n = args[0].AsString();
-            if (n != null) name = n;
-        }
+        if (args.Length == 0) return DynValue.Null();
+        string name = args[0].AsString() ?? "default";
 
         long resetTo = 0;
         if (args.Length > 1)
         {
             var v = ToDouble(args[1]);
-            if (v.HasValue) resetTo = (long)v.Value;
+            if (v.HasValue) resetTo = (long)Math.Floor(v.Value);
         }
 
-        string key = "__seq_" + name;
-        ctx.Accumulators[key] = DynValue.Integer(resetTo);
+        ctx.SequenceCounters[name] = resetTo;
         return DynValue.Integer(resetTo);
     }
 

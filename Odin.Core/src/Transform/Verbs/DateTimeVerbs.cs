@@ -269,7 +269,7 @@ internal static class DateTimeVerbs
         var dt = ParseDt(s);
         if (dt == null) return DynValue.Null();
 
-        return DynValue.Timestamp(FormatAsTimestamp(dt.Value));
+        return DynValue.String(dt.Value.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -468,7 +468,7 @@ internal static class DateTimeVerbs
         if (dt == null) return DynValue.Null();
 
         var result = new DateTime(dt.Value.Year, dt.Value.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-        return DynValue.Date(FormatAsDate(result));
+        return DynValue.String(FormatAsDate(result));
     }
 
     /// <summary>
@@ -485,7 +485,7 @@ internal static class DateTimeVerbs
 
         int lastDay = DateUtils.DaysInMonth(dt.Value.Year, dt.Value.Month);
         var result = new DateTime(dt.Value.Year, dt.Value.Month, lastDay, 0, 0, 0, DateTimeKind.Utc);
-        return DynValue.Date(FormatAsDate(result));
+        return DynValue.String(FormatAsDate(result));
     }
 
     /// <summary>
@@ -501,7 +501,7 @@ internal static class DateTimeVerbs
         if (dt == null) return DynValue.Null();
 
         var result = new DateTime(dt.Value.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-        return DynValue.Date(FormatAsDate(result));
+        return DynValue.String(FormatAsDate(result));
     }
 
     /// <summary>
@@ -517,7 +517,7 @@ internal static class DateTimeVerbs
         if (dt == null) return DynValue.Null();
 
         var result = new DateTime(dt.Value.Year, 12, 31, 0, 0, 0, DateTimeKind.Utc);
-        return DynValue.Date(FormatAsDate(result));
+        return DynValue.String(FormatAsDate(result));
     }
 
     /// <summary>
@@ -698,11 +698,25 @@ internal static class DateTimeVerbs
         var birthDt = ParseDt(s);
         if (birthDt == null) return DynValue.Null();
 
-        var now = DateTime.UtcNow;
-        int age = now.Year - birthDt.Value.Year;
-        // Adjust if birthday hasn't occurred yet this year
-        if (now.Month < birthDt.Value.Month ||
-            (now.Month == birthDt.Value.Month && now.Day < birthDt.Value.Day))
+        // As-of date: second argument when present, otherwise the current date.
+        DateTime asOf;
+        if (args.Length >= 2)
+        {
+            var asOfStr = ExtractDateStr(args[1]);
+            var asOfDt = ParseDt(asOfStr);
+            if (asOfDt == null) return DynValue.Null();
+            asOf = asOfDt.Value;
+        }
+        else
+        {
+            asOf = DateTime.UtcNow;
+        }
+
+        if (birthDt.Value > asOf) return DynValue.Null();
+
+        int age = asOf.Year - birthDt.Value.Year;
+        if (asOf.Month < birthDt.Value.Month ||
+            (asOf.Month == birthDt.Value.Month && asOf.Day < birthDt.Value.Day))
         {
             age--;
         }

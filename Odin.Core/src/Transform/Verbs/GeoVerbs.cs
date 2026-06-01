@@ -202,6 +202,8 @@ internal static class GeoVerbs
         var lon2 = ToDouble(args[3]);
         if (!lat1.HasValue || !lon1.HasValue || !lat2.HasValue || !lon2.HasValue)
             return DynValue.Null();
+        if (lat1.Value < -90 || lat1.Value > 90 || lat2.Value < -90 || lat2.Value > 90) return DynValue.Null();
+        if (lon1.Value < -180 || lon1.Value > 180 || lon2.Value < -180 || lon2.Value > 180) return DynValue.Null();
 
         double lat1Rad = lat1.Value * DegToRad;
         double lon1Rad = lon1.Value * DegToRad;
@@ -217,12 +219,10 @@ internal static class GeoVerbs
         );
         double midLon = lon1Rad + Math.Atan2(by, Math.Cos(lat1Rad) + bx);
 
-        var result = new List<DynValue>
+        return DynValue.Object(new List<KeyValuePair<string, DynValue>>
         {
-            DynValue.Float(midLat * RadToDeg),
-            DynValue.Float(midLon * RadToDeg)
-        };
-
-        return DynValue.Array(result);
+            new("lat", DynValue.Float(midLat * RadToDeg)),
+            new("lon", DynValue.Float(midLon * RadToDeg)),
+        });
     }
 }

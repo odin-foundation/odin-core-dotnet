@@ -835,11 +835,11 @@ public class DateTimeVerbTests
     // =========================================================================
 
     [Fact]
-    public void Sequence_DefaultZero()
+    public void Sequence_DefaultStartsAtOne()
     {
         var ctx = new VerbContext();
         var result = _registry.Invoke("sequence", new[] { S("counter") }, ctx);
-        Assert.Equal(0, result.AsInt64());
+        Assert.Equal(1, result.AsInt64());
     }
 
     [Fact]
@@ -849,9 +849,9 @@ public class DateTimeVerbTests
         var r1 = _registry.Invoke("sequence", new[] { S("counter") }, ctx);
         var r2 = _registry.Invoke("sequence", new[] { S("counter") }, ctx);
         var r3 = _registry.Invoke("sequence", new[] { S("counter") }, ctx);
-        Assert.Equal(0, r1.AsInt64());
-        Assert.Equal(1, r2.AsInt64());
-        Assert.Equal(2, r3.AsInt64());
+        Assert.Equal(1, r1.AsInt64());
+        Assert.Equal(2, r2.AsInt64());
+        Assert.Equal(3, r3.AsInt64());
     }
 
     [Fact]
@@ -861,20 +861,20 @@ public class DateTimeVerbTests
         var a1 = _registry.Invoke("sequence", new[] { S("a") }, ctx);
         var b1 = _registry.Invoke("sequence", new[] { S("b") }, ctx);
         var a2 = _registry.Invoke("sequence", new[] { S("a") }, ctx);
-        Assert.Equal(0, a1.AsInt64());
-        Assert.Equal(0, b1.AsInt64());
-        Assert.Equal(1, a2.AsInt64());
+        Assert.Equal(1, a1.AsInt64());
+        Assert.Equal(1, b1.AsInt64());
+        Assert.Equal(2, a2.AsInt64());
     }
 
     [Fact]
-    public void ResetSequence_ResetsToZero()
+    public void ResetSequence_RestartsCounter()
     {
         var ctx = new VerbContext();
         _registry.Invoke("sequence", new[] { S("counter") }, ctx);
         _registry.Invoke("sequence", new[] { S("counter") }, ctx);
         _registry.Invoke("resetSequence", new[] { S("counter") }, ctx);
         var result = _registry.Invoke("sequence", new[] { S("counter") }, ctx);
-        Assert.Equal(0, result.AsInt64());
+        Assert.Equal(1, result.AsInt64());
     }
 
     [Fact]
@@ -883,7 +883,7 @@ public class DateTimeVerbTests
         var ctx = new VerbContext();
         _registry.Invoke("resetSequence", new[] { S("counter"), I(10) }, ctx);
         var result = _registry.Invoke("sequence", new[] { S("counter") }, ctx);
-        Assert.Equal(10, result.AsInt64());
+        Assert.Equal(11, result.AsInt64());
     }
 
     // =========================================================================
@@ -1044,18 +1044,16 @@ public class DateTimeVerbTests
     public void Midpoint_SamePoint()
     {
         var result = Invoke("midpoint", F(40.0), F(-74.0), F(40.0), F(-74.0));
-        var arr = result.AsArray()!;
-        Assert.True(Math.Abs(arr[0].AsDouble()!.Value - 40.0) < 0.001);
-        Assert.True(Math.Abs(arr[1].AsDouble()!.Value - (-74.0)) < 0.001);
+        Assert.True(Math.Abs(result.Get("lat")!.AsDouble()!.Value - 40.0) < 0.001);
+        Assert.True(Math.Abs(result.Get("lon")!.AsDouble()!.Value - (-74.0)) < 0.001);
     }
 
     [Fact]
     public void Midpoint_Equator()
     {
         var result = Invoke("midpoint", F(0.0), F(0.0), F(0.0), F(10.0));
-        var arr = result.AsArray()!;
-        Assert.True(Math.Abs(arr[0].AsDouble()!.Value) < 0.01); // lat ~0
-        Assert.True(Math.Abs(arr[1].AsDouble()!.Value - 5.0) < 0.01); // lon ~5
+        Assert.True(Math.Abs(result.Get("lat")!.AsDouble()!.Value) < 0.01); // lat ~0
+        Assert.True(Math.Abs(result.Get("lon")!.AsDouble()!.Value - 5.0) < 0.01); // lon ~5
     }
 
     [Fact]

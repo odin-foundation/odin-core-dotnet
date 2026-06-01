@@ -446,16 +446,18 @@ public class CollectionVerbExtendedTests
     }
 
     [Fact]
-    public void Find_ReturnsFirstTruthy()
+    public void Find_ByCondition()
     {
-        Assert.Equal(I(2), Invoke("find", Arr(I(0), I(2), I(3))));
+        var data = Arr(Obj(("v", I(0))), Obj(("v", I(2))), Obj(("v", I(3))));
+        var result = Invoke("find", data, S("v"), S("="), I(2));
+        Assert.Equal(I(2), result.Get("v"));
     }
 
     [Fact]
     public void Find_ByField()
     {
         var data = Arr(Obj(("v", I(0))), Obj(("v", I(10))));
-        var result = Invoke("find", data, S("v"));
+        var result = Invoke("find", data, S("v"), S(">"), I(0));
         Assert.Equal(I(10), result.Get("v"));
     }
 
@@ -470,9 +472,10 @@ public class CollectionVerbExtendedTests
     }
 
     [Fact]
-    public void FindIndex_FirstTruthy()
+    public void FindIndex_ByCondition()
     {
-        Assert.Equal(I(1), Invoke("findIndex", Arr(I(0), I(5), I(10))));
+        var data = Arr(Obj(("v", I(0))), Obj(("v", I(5))), Obj(("v", I(10))));
+        Assert.Equal(I(1), Invoke("findIndex", data, S("v"), S("="), I(5)));
     }
 
     // =========================================================================
@@ -575,13 +578,13 @@ public class CollectionVerbExtendedTests
     // groupBy — extended
     // =========================================================================
 
+    // groupBy returns an array of { key, items } group objects.
     [Fact]
     public void GroupBy_EmptyArray()
     {
-        var result = Invoke("groupBy", Arr(), S("key"));
-        var obj = result.AsObject();
-        Assert.NotNull(obj);
-        Assert.True(obj!.Count == 0);
+        var groups = Invoke("groupBy", Arr(), S("key")).AsArray();
+        Assert.NotNull(groups);
+        Assert.Empty(groups!);
     }
 
     [Fact]
@@ -591,10 +594,9 @@ public class CollectionVerbExtendedTests
             Obj(("type", S("A")), ("v", I(1))),
             Obj(("type", S("A")), ("v", I(2)))
         );
-        var result = Invoke("groupBy", data, S("type"));
-        var obj = result.AsObject()!;
-        Assert.True(obj.Count == 1);
-        Assert.Equal("A", obj[0].Key);
+        var groups = Invoke("groupBy", data, S("type")).AsArray()!;
+        Assert.Single(groups);
+        Assert.Equal("A", groups[0].Get("key")!.AsString());
     }
 
     [Fact]
@@ -604,9 +606,7 @@ public class CollectionVerbExtendedTests
             Obj(("v", I(1))),
             Obj(("type", S("A")), ("v", I(2)))
         );
-        var result = Invoke("groupBy", data, S("type"));
-        var obj = result.AsObject()!;
-        Assert.Equal(2, obj.Count);
+        Assert.Equal(2, Invoke("groupBy", data, S("type")).AsArray()!.Count);
     }
 
     [Fact]
@@ -617,9 +617,7 @@ public class CollectionVerbExtendedTests
             Obj(("score", I(20))),
             Obj(("score", I(10)))
         );
-        var result = Invoke("groupBy", data, S("score"));
-        var obj = result.AsObject()!;
-        Assert.Equal(2, obj.Count);
+        Assert.Equal(2, Invoke("groupBy", data, S("score")).AsArray()!.Count);
     }
 
     [Fact]
@@ -630,9 +628,7 @@ public class CollectionVerbExtendedTests
             Obj(("active", B(false)), ("name", S("B"))),
             Obj(("active", B(true)), ("name", S("C")))
         );
-        var result = Invoke("groupBy", data, S("active"));
-        var obj = result.AsObject()!;
-        Assert.Equal(2, obj.Count);
+        Assert.Equal(2, Invoke("groupBy", data, S("active")).AsArray()!.Count);
     }
 
     [Fact]
@@ -642,22 +638,20 @@ public class CollectionVerbExtendedTests
             Obj(("k", S("x")), ("v", I(1))),
             Obj(("k", S("x")), ("v", I(2)))
         );
-        var result = Invoke("groupBy", data, S("k"));
-        var obj = result.AsObject()!;
-        Assert.True(obj.Count == 1);
-        Assert.Equal("x", obj[0].Key);
+        var groups = Invoke("groupBy", data, S("k")).AsArray()!;
+        Assert.Single(groups);
+        Assert.Equal("x", groups[0].Get("key")!.AsString());
     }
 
     // =========================================================================
-    // partition — extended
+    // partition — extended (array, field, op, value)
     // =========================================================================
 
     [Fact]
     public void Partition_AllMatch()
     {
-        var data = Arr(I(1), I(2), I(3));
-        var result = Invoke("partition", data);
-        var parts = result.AsArray()!;
+        var data = Arr(Obj(("v", I(1))), Obj(("v", I(2))), Obj(("v", I(3))));
+        var parts = Invoke("partition", data, S("v"), S(">"), I(0)).AsArray()!;
         Assert.Equal(3, parts[0].AsArray()!.Count);
         Assert.Empty(parts[1].AsArray()!);
     }
@@ -665,9 +659,8 @@ public class CollectionVerbExtendedTests
     [Fact]
     public void Partition_NoneMatch()
     {
-        var data = Arr(I(0), B(false), Null());
-        var result = Invoke("partition", data);
-        var parts = result.AsArray()!;
+        var data = Arr(Obj(("v", I(1))), Obj(("v", I(2))), Obj(("v", I(3))));
+        var parts = Invoke("partition", data, S("v"), S(">"), I(99)).AsArray()!;
         Assert.Empty(parts[0].AsArray()!);
         Assert.Equal(3, parts[1].AsArray()!.Count);
     }
@@ -675,8 +668,7 @@ public class CollectionVerbExtendedTests
     [Fact]
     public void Partition_EmptyArray()
     {
-        var result = Invoke("partition", Arr());
-        var parts = result.AsArray()!;
+        var parts = Invoke("partition", Arr(), S("v"), S("="), I(1)).AsArray()!;
         Assert.Empty(parts[0].AsArray()!);
         Assert.Empty(parts[1].AsArray()!);
     }
@@ -685,8 +677,7 @@ public class CollectionVerbExtendedTests
     public void Partition_ByField()
     {
         var data = Arr(Obj(("v", I(10))), Obj(("v", I(0))));
-        var result = Invoke("partition", data, S("v"));
-        var parts = result.AsArray()!;
+        var parts = Invoke("partition", data, S("v"), S(">"), I(5)).AsArray()!;
         Assert.Single(parts[0].AsArray()!);
         Assert.Single(parts[1].AsArray()!);
     }
@@ -904,29 +895,30 @@ public class CollectionVerbExtendedTests
     // dedupe — extended
     // =========================================================================
 
+    // dedupe(array, keyField): distinct by key; for scalars the value is the key.
     [Fact]
     public void Dedupe_EmptyArray()
     {
-        Assert.Equal(Arr(), Invoke("dedupe", Arr()));
+        Assert.Equal(Arr(), Invoke("dedupe", Arr(), S("id")));
     }
 
     [Fact]
     public void Dedupe_NoDuplicates()
     {
-        Assert.Equal(Arr(I(1), I(2), I(3)), Invoke("dedupe", Arr(I(1), I(2), I(3))));
+        Assert.Equal(Arr(I(1), I(2), I(3)), Invoke("dedupe", Arr(I(1), I(2), I(3)), S("id")));
     }
 
     [Fact]
-    public void Dedupe_ConsecutiveDuplicates()
+    public void Dedupe_RemovesDuplicates()
     {
-        Assert.Equal(Arr(I(1), I(2), I(3)), Invoke("dedupe", Arr(I(1), I(1), I(2), I(2), I(3))));
+        Assert.Equal(Arr(I(1), I(2), I(3)), Invoke("dedupe", Arr(I(1), I(1), I(2), I(2), I(3)), S("id")));
     }
 
     [Fact]
-    public void Dedupe_NonConsecutiveDuplicatesKept()
+    public void Dedupe_NonConsecutiveDuplicatesRemoved()
     {
-        // dedupe only removes consecutive duplicates
-        Assert.Equal(Arr(I(1), I(2), I(1)), Invoke("dedupe", Arr(I(1), I(2), I(1))));
+        // dedupe removes all duplicates across the array, not just consecutive ones.
+        Assert.Equal(Arr(I(1), I(2)), Invoke("dedupe", Arr(I(1), I(2), I(1)), S("id")));
     }
 
     // =========================================================================
@@ -1185,44 +1177,38 @@ public class CollectionVerbExtendedTests
     // rank — extended
     // =========================================================================
 
+    // rank returns objects pairing a _rank column with the original value (descending).
     [Fact]
     public void Rank_BasicDescending()
     {
-        // rank returns Integer values; highest = rank 1 (descending by default)
-        var result = Invoke("rank", Arr(I(10), I(30), I(20)));
-        var arr = result.AsArray()!;
+        var arr = Invoke("rank", Arr(I(10), I(30), I(20))).AsArray()!;
         Assert.Equal(3, arr.Count);
-        // 10 -> rank 3, 30 -> rank 1, 20 -> rank 2
-        Assert.Equal(I(3), arr[0]);
-        Assert.Equal(I(1), arr[1]);
-        Assert.Equal(I(2), arr[2]);
+        Assert.Equal(I(3), arr[0].Get("_rank")); // 10 -> rank 3
+        Assert.Equal(I(1), arr[1].Get("_rank")); // 30 -> rank 1
+        Assert.Equal(I(2), arr[2].Get("_rank")); // 20 -> rank 2
     }
 
     [Fact]
     public void Rank_TiedValues()
     {
-        var result = Invoke("rank", Arr(I(10), I(10), I(30)));
-        var arr = result.AsArray()!;
-        // Both 10s should have same rank
-        Assert.Equal(arr[0], arr[1]);
+        var arr = Invoke("rank", Arr(I(10), I(10), I(30))).AsArray()!;
+        Assert.Equal(arr[0].Get("_rank"), arr[1].Get("_rank"));
     }
 
     [Fact]
     public void Rank_SingleElement()
     {
-        var result = Invoke("rank", Arr(I(42)));
-        var arr = result.AsArray()!;
-        Assert.Equal(I(1), arr[0]);
+        var arr = Invoke("rank", Arr(I(42))).AsArray()!;
+        Assert.Equal(I(1), arr[0].Get("_rank"));
     }
 
     [Fact]
     public void Rank_AllSameValue()
     {
-        var result = Invoke("rank", Arr(I(5), I(5), I(5)));
-        var arr = result.AsArray()!;
-        Assert.Equal(I(1), arr[0]);
-        Assert.Equal(I(1), arr[1]);
-        Assert.Equal(I(1), arr[2]);
+        var arr = Invoke("rank", Arr(I(5), I(5), I(5))).AsArray()!;
+        Assert.Equal(I(1), arr[0].Get("_rank"));
+        Assert.Equal(I(1), arr[1].Get("_rank"));
+        Assert.Equal(I(1), arr[2].Get("_rank"));
     }
 
     [Fact]
@@ -1597,22 +1583,23 @@ public class CollectionVerbExtendedTests
         Assert.Equal(F(9.9), Invoke("max", Arr(F(1.1), F(9.9), F(5.5))));
     }
 
+    // avg returns an integer when the mean is whole, a number otherwise.
     [Fact]
     public void Avg_Floats()
     {
-        Assert.Equal(F(2.0), Invoke("avg", Arr(F(1.0), F(2.0), F(3.0))));
+        Assert.Equal(2.0, Invoke("avg", Arr(F(1.0), F(2.0), F(3.0))).AsDouble()!.Value, 10);
     }
 
     [Fact]
     public void Avg_MixedIntFloat()
     {
-        Assert.Equal(F(2.0), Invoke("avg", Arr(I(1), F(2.0), I(3))));
+        Assert.Equal(2.0, Invoke("avg", Arr(I(1), F(2.0), I(3))).AsDouble()!.Value, 10);
     }
 
     [Fact]
     public void Avg_WithNonNumericSkipped()
     {
-        Assert.Equal(F(15.0), Invoke("avg", Arr(I(10), S("abc"), I(20))));
+        Assert.Equal(15.0, Invoke("avg", Arr(I(10), S("abc"), I(20))).AsDouble()!.Value, 10);
     }
 
     [Fact]
@@ -1817,14 +1804,14 @@ public class CollectionVerbExtendedTests
     // rowNumber — extended
     // =========================================================================
 
+    // rowNumber pairs each array item with a 1-based _rowNum column.
     [Fact]
     public void RowNumber_Increments()
     {
-        var ctx = new VerbContext();
-        var reg = new VerbRegistry();
-        Assert.Equal(I(1), reg.Invoke("rowNumber", Array.Empty<DynValue>(), ctx));
-        Assert.Equal(I(2), reg.Invoke("rowNumber", Array.Empty<DynValue>(), ctx));
-        Assert.Equal(I(3), reg.Invoke("rowNumber", Array.Empty<DynValue>(), ctx));
+        var result = Invoke("rowNumber", Arr(S("a"), S("b"), S("c"))).AsArray()!;
+        Assert.Equal(I(1), result[0].Get("_rowNum"));
+        Assert.Equal(I(2), result[1].Get("_rowNum"));
+        Assert.Equal(I(3), result[2].Get("_rowNum"));
     }
 
     // =========================================================================

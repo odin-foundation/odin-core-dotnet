@@ -533,14 +533,24 @@ internal static class FinancialVerbs
     /// <summary>Z-score: (value - mean) / stddev.</summary>
     private static DynValue Zscore(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length < 3) return DynValue.Null();
+        if (args.Length < 2) return DynValue.Null();
         var value = ToDouble(args[0]);
-        var mean = ToDouble(args[1]);
-        var stddev = ToDouble(args[2]);
-        if (!value.HasValue || !mean.HasValue || !stddev.HasValue) return DynValue.Null();
+        var data = ExtractDoubles(args[1]);
+        if (!value.HasValue || data == null || data.Count == 0) return DynValue.Null();
+
+        double mean = 0;
+        for (int i = 0; i < data.Count; i++) mean += data[i];
+        mean /= data.Count;
+
+        double sumSq = 0;
+        for (int i = 0; i < data.Count; i++) sumSq += (data[i] - mean) * (data[i] - mean);
+        double stddev = Math.Sqrt(sumSq / data.Count);
         // ReSharper disable once CompareOfFloatsByEqualityOperator
-        if (stddev.Value == 0.0) return DynValue.Null();
-        return NumericResult((value.Value - mean.Value) / stddev.Value);
+        if (stddev == 0.0) return DynValue.Null();
+
+        double z = (value.Value - mean) / stddev;
+        if (double.IsInfinity(z) || double.IsNaN(z)) return DynValue.Null();
+        return NumericResult(z);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -561,15 +571,20 @@ internal static class FinancialVerbs
         return NumericResult(clamped);
     }
 
-    /// <summary>Linear interpolation: a + (b - a) * t.</summary>
+    /// <summary>Linear interpolation between two points: interpolate(x, x1, y1, x2, y2).</summary>
     private static DynValue Interpolate(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length < 3) return DynValue.Null();
-        var a = ToDouble(args[0]);
-        var b = ToDouble(args[1]);
-        var t = ToDouble(args[2]);
-        if (!a.HasValue || !b.HasValue || !t.HasValue) return DynValue.Null();
-        return NumericResult(a.Value + (b.Value - a.Value) * t.Value);
+        if (args.Length < 5) return DynValue.Null();
+        var x = ToDouble(args[0]);
+        var x1 = ToDouble(args[1]);
+        var y1 = ToDouble(args[2]);
+        var x2 = ToDouble(args[3]);
+        var y2 = ToDouble(args[4]);
+        if (!x.HasValue || !x1.HasValue || !y1.HasValue || !x2.HasValue || !y2.HasValue)
+            return DynValue.Null();
+        // ReSharper disable once CompareOfFloatsByEqualityOperator
+        if (x2.Value == x1.Value) return NumericResult(y1.Value);
+        return NumericResult(y1.Value + (x.Value - x1.Value) * (y2.Value - y1.Value) / (x2.Value - x1.Value));
     }
 
     /// <summary>Weighted average: args[0]=values array, args[1]=weights array.</summary>

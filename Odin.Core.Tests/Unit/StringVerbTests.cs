@@ -290,7 +290,7 @@ public class StringVerbTests
 
     [Fact]
     public void Pad_Center()
-        => Assert.Equal("**hi**", Invoke("pad", S("hi"), I(6), S("*")).AsString());
+        => Assert.Equal("hi****", Invoke("pad", S("hi"), I(6), S("*")).AsString());
 
     [Fact]
     public void Pad_OddWidth()
@@ -679,11 +679,11 @@ public class StringVerbTests
 
     [Fact]
     public void Match_Found()
-        => Assert.Equal("123", Invoke("match", S("abc123def"), S("\\d+")).AsString());
+        => Assert.True(Invoke("match", S("abc123def"), S("\\d+")).AsBool());
 
     [Fact]
     public void Match_NotFound()
-        => Assert.True(Invoke("match", S("abc"), S("\\d+")).IsNull);
+        => Assert.False(Invoke("match", S("abc"), S("\\d+")).AsBool());
 
     [Fact]
     public void Match_Null()
@@ -695,7 +695,7 @@ public class StringVerbTests
 
     [Fact]
     public void Match_FullMatch()
-        => Assert.Equal("hello", Invoke("match", S("hello"), S("^hello$")).AsString());
+        => Assert.True(Invoke("match", S("hello"), S("^hello$")).AsBool());
 
     // =========================================================================
     // extract
@@ -704,12 +704,13 @@ public class StringVerbTests
     [Fact]
     public void Extract_WithGroups()
     {
-        var result = Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})"));
-        var arr = result.AsArray()!;
-        Assert.Equal(3, arr.Count);
-        Assert.Equal("2024", arr[0].AsString());
-        Assert.Equal("01", arr[1].AsString());
-        Assert.Equal("15", arr[2].AsString());
+        // Default group index 0 returns the whole match; explicit indices select groups.
+        Assert.Equal("2024-01-15",
+            Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})")).AsString());
+        Assert.Equal("2024",
+            Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})"), I(1)).AsString());
+        Assert.Equal("15",
+            Invoke("extract", S("2024-01-15"), S("(\\d{4})-(\\d{2})-(\\d{2})"), I(3)).AsString());
     }
 
     [Fact]
@@ -805,20 +806,16 @@ public class StringVerbTests
     // =========================================================================
 
     [Fact]
-    public void Wrap_SameChar()
-        => Assert.Equal("\"hello\"", Invoke("wrap", S("hello"), S("\"")).AsString());
+    public void Wrap_WordWrap()
+        => Assert.Equal("the quick\nbrown fox", Invoke("wrap", S("the quick brown fox"), I(10)).AsString());
 
     [Fact]
-    public void Wrap_DifferentChars()
-        => Assert.Equal("(hello)", Invoke("wrap", S("hello"), S("("), S(")")).AsString());
+    public void Wrap_ShorterThanWidth()
+        => Assert.Equal("hello", Invoke("wrap", S("hello"), I(20)).AsString());
 
     [Fact]
-    public void Wrap_Null()
-        => Assert.True(Invoke("wrap", Null(), S("\"")).IsNull);
-
-    [Fact]
-    public void Wrap_Empty()
-        => Assert.Equal("\"\"", Invoke("wrap", S(""), S("\"")).AsString());
+    public void Wrap_ZeroWidth()
+        => Assert.True(Invoke("wrap", S("hello"), I(0)).IsNull);
 
     // =========================================================================
     // center
@@ -909,7 +906,7 @@ public class StringVerbTests
 
     [Fact]
     public void Clean_RemovesControlChars()
-        => Assert.Equal("helloworld\n", Invoke("clean", S("hello\x00\x01world\n")).AsString());
+        => Assert.Equal("helloworld", Invoke("clean", S("hello\x00\x01world\n")).AsString());
 
     [Fact]
     public void Clean_KeepsPrintable()
@@ -924,8 +921,8 @@ public class StringVerbTests
         => Assert.Equal("", Invoke("clean", S("")).AsString());
 
     [Fact]
-    public void Clean_KeepsTabs()
-        => Assert.Equal("\thello\t", Invoke("clean", S("\thello\t")).AsString());
+    public void Clean_CollapsesWhitespace()
+        => Assert.Equal("hello", Invoke("clean", S("\thello\t")).AsString());
 
     // =========================================================================
     // wordCount

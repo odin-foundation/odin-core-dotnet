@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using Odin.Core.Types;
 
@@ -73,27 +74,46 @@ namespace Odin.Core.Transform
                     if (includeHeader)
                         sb.Append("{}\n");
 
-                    // First pass: flat top-level fields and leaf chains
+                    // A document with arrays or deep nesting collapses single-leaf-chain
+                    // groups to flat dotted assignments; a shallow document keeps every
+                    // top-level object as its own {section}.
+                    bool deep = DocumentHasArraysOrDeepNesting(entries);
+
+                    // Pass 1: top-level scalar fields.
                     for (int i = 0; i < entries.Count; i++)
                     {
-                        var key = entries[i].Key;
                         var val = entries[i].Value;
-
-                        if (val.Type == DynValueType.Object)
-                            CollectLeafPaths(sb, key, val, key, modifiers);
-                        else if (val.Type != DynValueType.Array)
-                            WriteAssignment(sb, key, val, key, modifiers);
+                        if (val.Type != DynValueType.Object && val.Type != DynValueType.Array)
+                            WriteAssignment(sb, entries[i].Key, val, entries[i].Key, modifiers);
                     }
 
-                    // Second pass: proper sections (non-leaf-chain objects and arrays)
+                    // Pass 2 (deep only): single-leaf-chain object groups as flat dotted.
+                    if (deep)
+                    {
+                        for (int i = 0; i < entries.Count; i++)
+                        {
+                            var val = entries[i].Value;
+                            if (val.Type == DynValueType.Object && IsPureLeafChain(val))
+                                CollectLeafPathsInner(sb, entries[i].Key, val, entries[i].Key, modifiers);
+                        }
+                    }
+
+                    // Pass 3: header groups — objects (and arrays) needing a section/table.
                     string lastCtx = "";
                     for (int i = 0; i < entries.Count; i++)
                     {
                         var key = entries[i].Key;
                         var val = entries[i].Value;
 
-                        if (val.Type == DynValueType.Object && !IsPureLeafChain(val))
+                        if (val.Type == DynValueType.Object)
                         {
+                            if (deep && IsPureLeafChain(val)) continue; // already flattened
+                            if (deep && IsSingleScalarArrayChild(val, out var arrKey, out var arrItems))
+                            {
+                                // {out.arr[] : ~} — combined absolute header for a lone single-item array child.
+                                WriteArraySectionSmart(sb, key + "." + arrKey, null, arrItems, modifiers);
+                                continue;
+                            }
                             WriteSection(sb, key, key, null, val, modifiers, ref lastCtx);
                         }
                         else if (val.Type == DynValueType.Array)
@@ -242,6 +262,18 @@ namespace Odin.Core.Transform
                 return;
             }
 
+            // Array-of-arrays: positional table with [0], [1], ... columns.
+            bool allArrays = true;
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (items[i].Type != DynValueType.Array) { allArrays = false; break; }
+            }
+            if (allArrays)
+            {
+                WritePositionalTable(sb, name, parentSection, items);
+                return;
+            }
+
             // Check if all items are objects with consistent keys (tabular array)
             var columns = GetConsistentColumns(items);
             if (columns != null && columns.Count > 0)
@@ -284,6 +316,100 @@ namespace Odin.Core.Transform
                 sb.Append(i.ToString(CultureInfo.InvariantCulture));
                 sb.Append("]}\n");
                 WriteFieldsSimple(sb, items[i], basePath + "[" + i.ToString(CultureInfo.InvariantCulture) + "]");
+            }
+        }
+
+        // Array-of-arrays as a positional table: columns are [0], [1], ...; an
+        // object element at position p expands to [p].field columns.
+        private static void WritePositionalTable(StringBuilder sb, string name,
+            string? parentSection, List<DynValue> items)
+        {
+            int width = 0;
+            for (int i = 0; i < items.Count; i++)
+            {
+                var arr = items[i].AsArray();
+                if (arr != null && arr.Count > width) width = arr.Count;
+            }
+
+            // Per-position object field names (when every present element is an object
+            // with matching keys); otherwise the position is a single scalar column.
+            var posFields = new List<string>?[width];
+            for (int p = 0; p < width; p++)
+            {
+                List<string>? fields = null;
+                bool consistent = true;
+                bool any = false;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var arr = items[i].AsArray();
+                    if (arr == null || p >= arr.Count) continue;
+                    var el = arr[p];
+                    if (el.Type != DynValueType.Object) { consistent = false; break; }
+                    var obj = el.AsObject()!;
+                    var keys = new List<string>(obj.Count);
+                    foreach (var kv in obj) keys.Add(kv.Key);
+                    if (!any) { fields = keys; any = true; }
+                    else if (fields == null || !keys.SequenceEqual(fields)) { consistent = false; break; }
+                }
+                posFields[p] = (consistent && any) ? fields : null;
+            }
+
+            // Header
+            sb.Append('{');
+            if (parentSection != null) sb.Append('.');
+            sb.Append(name);
+            sb.Append("[] : ");
+            bool firstCol = true;
+            for (int p = 0; p < width; p++)
+            {
+                var fields = posFields[p];
+                if (fields != null)
+                {
+                    string parent = "[" + p.ToString(CultureInfo.InvariantCulture) + "]";
+                    for (int f = 0; f < fields.Count; f++)
+                    {
+                        if (!firstCol) sb.Append(", ");
+                        firstCol = false;
+                        sb.Append(f == 0 ? parent + "." + fields[f] : "." + fields[f]);
+                    }
+                }
+                else
+                {
+                    if (!firstCol) sb.Append(", ");
+                    firstCol = false;
+                    sb.Append('[').Append(p.ToString(CultureInfo.InvariantCulture)).Append(']');
+                }
+            }
+            sb.Append("}\n");
+
+            // Rows
+            for (int i = 0; i < items.Count; i++)
+            {
+                var arr = items[i].AsArray();
+                bool firstCell = true;
+                for (int p = 0; p < width; p++)
+                {
+                    var fields = posFields[p];
+                    DynValue? el = (arr != null && p < arr.Count) ? arr[p] : null;
+                    if (fields != null)
+                    {
+                        var obj = el?.AsObject();
+                        for (int f = 0; f < fields.Count; f++)
+                        {
+                            if (!firstCell) sb.Append(", ");
+                            firstCell = false;
+                            DynValue? fv = obj != null ? FindField(obj, fields[f]) : null;
+                            if (fv != null) sb.Append(ValueToOdinString(fv));
+                        }
+                    }
+                    else
+                    {
+                        if (!firstCell) sb.Append(", ");
+                        firstCell = false;
+                        if (el != null) sb.Append(ValueToOdinString(el));
+                    }
+                }
+                sb.Append('\n');
             }
         }
 
@@ -469,6 +595,42 @@ namespace Odin.Core.Transform
         // ─────────────────────────────────────────────────────────────────────
         // Leaf chain detection and collection
         // ─────────────────────────────────────────────────────────────────────
+
+        // True when any path contains an array or nests objects more than one level
+        // deep — the document then uses hierarchical (not flat section) output.
+        private static bool DocumentHasArraysOrDeepNesting(List<KeyValuePair<string, DynValue>> entries)
+        {
+            foreach (var kv in entries)
+            {
+                if (kv.Value.Type == DynValueType.Array) return true;
+                if (kv.Value.Type == DynValueType.Object)
+                {
+                    var inner = kv.Value.AsObject();
+                    if (inner != null)
+                        foreach (var ikv in inner)
+                            if (ikv.Value.Type == DynValueType.Object || ikv.Value.Type == DynValueType.Array)
+                                return true;
+                }
+            }
+            return false;
+        }
+
+        // True when an object holds exactly one child: an array with a single scalar
+        // item (one leaf descendant), which serializes with a combined absolute header.
+        private static bool IsSingleScalarArrayChild(DynValue val, out string key, out List<DynValue> items)
+        {
+            key = "";
+            items = null!;
+            var entries = val.AsObject();
+            if (entries == null || entries.Count != 1) return false;
+            if (entries[0].Value.Type != DynValueType.Array) return false;
+            var arr = entries[0].Value.AsArray()!;
+            if (arr.Count != 1) return false;
+            if (arr[0].Type == DynValueType.Object || arr[0].Type == DynValueType.Array) return false;
+            key = entries[0].Key;
+            items = arr;
+            return true;
+        }
 
         private static bool IsPureLeafChain(DynValue val)
         {

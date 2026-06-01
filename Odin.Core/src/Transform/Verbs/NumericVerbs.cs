@@ -409,26 +409,50 @@ internal static class NumericVerbs
         if (args.Length < 1) return DynValue.Null();
         if (args[0].IsNull) return DynValue.Null();
 
-        // If already integer, return it
-        var intVal = args[0].AsInt64();
-        if (intVal.HasValue) return DynValue.Integer(intVal.Value);
-
-        // If float, truncate
-        var dblVal = ToDouble(args[0]);
-        if (dblVal.HasValue) return DynValue.Integer((long)dblVal.Value);
-
-        // Try parsing string
-        var s = args[0].AsString();
-        if (s != null)
+        int radix = 10;
+        if (args.Length >= 2)
         {
-            s = s.Trim();
-            if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed))
-                return DynValue.Integer(parsed);
-            // Try parsing as float then truncating
-            if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out double dParsed))
-                return DynValue.Integer((long)dParsed);
+            var r = ToDouble(args[1]);
+            if (r.HasValue) radix = (int)Math.Floor(r.Value);
         }
-        return DynValue.Null();
+        if (radix < 2 || radix > 36) return DynValue.Null();
+
+        string s = (args[0].AsString()
+            ?? args[0].AsInt64()?.ToString(CultureInfo.InvariantCulture)
+            ?? ToDouble(args[0])?.ToString(CultureInfo.InvariantCulture)
+            ?? "").Trim();
+
+        var parsed = ParseIntRadix(s, radix);
+        return parsed.HasValue ? DynValue.Integer(parsed.Value) : DynValue.Null();
+    }
+
+    // Parse a leading integer in the given radix (JS parseInt prefix semantics).
+    private static long? ParseIntRadix(string s, int radix)
+    {
+        if (s.Length == 0) return null;
+        int i = 0;
+        bool negative = false;
+        if (s[0] == '+' || s[0] == '-')
+        {
+            negative = s[0] == '-';
+            i++;
+        }
+        long value = 0;
+        int digits = 0;
+        for (; i < s.Length; i++)
+        {
+            int d;
+            char c = s[i];
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
+            else break;
+            if (d >= radix) break;
+            value = value * radix + d;
+            digits++;
+        }
+        if (digits == 0) return null;
+        return negative ? -value : value;
     }
 
     private static DynValue SafeDivide(DynValue[] args, VerbContext ctx)

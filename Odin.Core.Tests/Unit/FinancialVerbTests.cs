@@ -822,31 +822,30 @@ public class FinancialVerbTests
     // zscore — extended
     // =========================================================================
 
+    // zscore(value, array): mean and population stddev are derived from the array.
+    // For [3, 7]: mean = 5, population stddev = 2.
     [Fact]
     public void Zscore_AtMean()
     {
-        // zscore(value, mean, stddev)
-        AssertNumeric(Invoke("zscore", F(5.0), F(5.0), F(2.0)), 0.0, 1e-10);
+        AssertNumeric(Invoke("zscore", F(5.0), Arr(F(3.0), F(7.0))), 0.0, 1e-10);
     }
 
     [Fact]
     public void Zscore_AboveMean()
     {
-        var result = Invoke("zscore", F(7.0), F(5.0), F(2.0));
-        AssertNumeric(result, 1.0, 1e-10);
+        AssertNumeric(Invoke("zscore", F(7.0), Arr(F(3.0), F(7.0))), 1.0, 1e-10);
     }
 
     [Fact]
     public void Zscore_BelowMean()
     {
-        var result = Invoke("zscore", F(3.0), F(5.0), F(2.0));
-        AssertNumeric(result, -1.0, 1e-10);
+        AssertNumeric(Invoke("zscore", F(3.0), Arr(F(3.0), F(7.0))), -1.0, 1e-10);
     }
 
     [Fact]
     public void Zscore_ZeroStddev()
     {
-        Assert.True(Invoke("zscore", F(5.0), F(5.0), F(0.0)).IsNull);
+        Assert.True(Invoke("zscore", F(5.0), Arr(F(5.0), F(5.0))).IsNull);
     }
 
     // =========================================================================
@@ -871,23 +870,23 @@ public class FinancialVerbTests
         AssertNumeric(Invoke("clamp", F(15.0), F(0.0), F(10.0)), 10.0, 1e-10);
     }
 
+    // interpolate(x, x1, y1, x2, y2): linear interpolation between (x1,y1) and (x2,y2).
     [Fact]
     public void Interpolate_Midpoint()
     {
-        // interpolate(a, b, t) = a + (b - a) * t
-        AssertNumeric(Invoke("interpolate", F(0.0), F(100.0), F(0.5)), 50.0, 1e-10);
+        AssertNumeric(Invoke("interpolate", F(5.0), F(0.0), F(0.0), F(10.0), F(100.0)), 50.0, 1e-10);
     }
 
     [Fact]
     public void Interpolate_AtStart()
     {
-        AssertNumeric(Invoke("interpolate", F(0.0), F(100.0), F(0.0)), 0.0, 1e-10);
+        AssertNumeric(Invoke("interpolate", F(0.0), F(0.0), F(0.0), F(10.0), F(100.0)), 0.0, 1e-10);
     }
 
     [Fact]
     public void Interpolate_AtEnd()
     {
-        AssertNumeric(Invoke("interpolate", F(0.0), F(100.0), F(1.0)), 100.0, 1e-10);
+        AssertNumeric(Invoke("interpolate", F(10.0), F(0.0), F(0.0), F(10.0), F(100.0)), 100.0, 1e-10);
     }
 
     [Fact]
