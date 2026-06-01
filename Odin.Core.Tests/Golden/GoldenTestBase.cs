@@ -130,6 +130,9 @@ public class Expected
     [JsonPropertyName("documents")]
     public List<ExpectedDocument>? Documents { get; set; }
 
+    [JsonPropertyName("currentState")]
+    public ExpectedCurrentState? CurrentState { get; set; }
+
     [JsonPropertyName("directives")]
     public List<ExpectedDirective>? Directives { get; set; }
 
@@ -190,6 +193,18 @@ public class ExpectedDocument
 
     [JsonPropertyName("assignments")]
     public Dictionary<string, ExpectedValue>? Assignments { get; set; }
+}
+
+public class ExpectedCurrentState
+{
+    [JsonPropertyName("assignments")]
+    public Dictionary<string, ExpectedValue>? Assignments { get; set; }
+
+    [JsonPropertyName("metadata")]
+    public Dictionary<string, JsonElement>? Metadata { get; set; }
+
+    [JsonPropertyName("absent")]
+    public List<string>? Absent { get; set; }
 }
 
 public class ExpectedValue

@@ -99,6 +99,13 @@ public class ParseTests : GoldenTestBase
             return;
         }
 
+        // Chain current-state test
+        if (expected.CurrentState != null)
+        {
+            RunCurrentStateTest(suiteName, test, expected);
+            return;
+        }
+
         // Single document test
         var doc = Core.Odin.Parse(input);
 
@@ -157,6 +164,32 @@ public class ParseTests : GoldenTestBase
             if (docs.Count > 0)
             {
                 VerifyDirectives(docs[0], expected.Directives);
+            }
+        }
+    }
+
+    private static void RunCurrentStateTest(string suiteName, TestCase test, Expected expected)
+    {
+        var input = GetInputString(test);
+        var current = Core.Odin.CollapseChain(input);
+        var context = $"[{suiteName}/{test.Id}]";
+        var state = expected.CurrentState!;
+
+        if (state.Assignments != null)
+        {
+            VerifyAssignments(current.Assignments, state.Assignments, context);
+        }
+
+        if (state.Metadata != null)
+        {
+            VerifyMetadata(current.Metadata, state.Metadata, context);
+        }
+
+        if (state.Absent != null)
+        {
+            foreach (var path in state.Absent)
+            {
+                Assert.Null(current.Get(path));
             }
         }
     }

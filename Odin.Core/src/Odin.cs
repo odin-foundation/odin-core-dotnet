@@ -88,6 +88,102 @@ public static class Odin
         return OdinParser.ParseMulti(input, ParseOptions.Default);
     }
 
+    /// <summary>
+    /// Collapse a chained ODIN document into its computed current state.
+    /// Later documents overlay earlier ones, a repeated path replaces the earlier
+    /// value, <c>field = ~</c> removes the field and its descendants, and
+    /// <c>field[] = ~</c> clears the array. The result carries the final document's metadata.
+    /// </summary>
+    public static OdinDocument CollapseChain(string input)
+    {
+        return CollapseChain(ParseDocuments(input));
+    }
+
+    /// <summary>
+    /// Collapse a parsed chain of documents into its computed current state.
+    /// </summary>
+    public static OdinDocument CollapseChain(IReadOnlyList<OdinDocument> docs)
+    {
+        var assignments = new OrderedMap<string, OdinValue>();
+        var modifiers = new OrderedMap<string, OdinModifiers>();
+        OrderedMap<string, OdinValue> metadata = new();
+
+        foreach (var doc in docs)
+        {
+            metadata = doc.Metadata.Clone();
+
+            foreach (var path in doc.Paths())
+            {
+                if (path.StartsWith("$.", StringComparison.Ordinal)) continue;
+
+                var value = doc.Get(path);
+                if (value == null) continue;
+
+                if (value.Type == OdinValueType.Null)
+                {
+                    if (path.EndsWith("[]", StringComparison.Ordinal))
+                    {
+                        ClearArray(assignments, modifiers, path.Substring(0, path.Length - 2));
+                    }
+                    else
+                    {
+                        RemovePath(assignments, modifiers, path);
+                    }
+                    continue;
+                }
+
+                assignments.Set(path, value);
+                if (doc.PathModifiers.TryGetValue(path, out var mods))
+                {
+                    modifiers.Set(path, mods);
+                }
+                else
+                {
+                    modifiers.Remove(path);
+                }
+            }
+        }
+
+        return new OdinDocument(metadata: metadata, assignments: assignments, modifiers: modifiers);
+    }
+
+    /// <summary>Remove a path and any nested descendants from the working maps.</summary>
+    private static void RemovePath(
+        OrderedMap<string, OdinValue> assignments,
+        OrderedMap<string, OdinModifiers> modifiers,
+        string path)
+    {
+        var dotPrefix = path + ".";
+        var bracketPrefix = path + "[";
+        foreach (var key in new List<string>(assignments.Keys))
+        {
+            if (key == path
+                || key.StartsWith(dotPrefix, StringComparison.Ordinal)
+                || key.StartsWith(bracketPrefix, StringComparison.Ordinal))
+            {
+                assignments.Remove(key);
+                modifiers.Remove(key);
+            }
+        }
+    }
+
+    /// <summary>Clear all indexed elements of an array path from the working maps.</summary>
+    private static void ClearArray(
+        OrderedMap<string, OdinValue> assignments,
+        OrderedMap<string, OdinModifiers> modifiers,
+        string arrayPath)
+    {
+        var prefix = arrayPath + "[";
+        foreach (var key in new List<string>(assignments.Keys))
+        {
+            if (key.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                assignments.Remove(key);
+                modifiers.Remove(key);
+            }
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Serialize
     // ─────────────────────────────────────────────────────────────────────────

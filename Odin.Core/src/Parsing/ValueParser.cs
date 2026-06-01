@@ -100,12 +100,14 @@ namespace Odin.Core.Parsing
                     return (ParseDateValue(token.Value, token.Line, token.Column), 1);
 
                 case TokenType.TimeLiteral:
+                    ValidateTimeString(token.Value, token.Line, token.Column);
                     return (OdinValues.Time(token.Value), 1);
 
                 case TokenType.DurationLiteral:
                     return (OdinValues.Duration(token.Value), 1);
 
                 case TokenType.TimestampLiteral:
+                    ValidateTimestampString(token.Value, token.Line, token.Column);
                     return (OdinValues.Timestamp(0, token.Value), 1);
 
                 case TokenType.Path:
@@ -123,6 +125,7 @@ namespace Odin.Core.Parsing
                     }
                     if (token.Value.Length > 0 && token.Value[0] == 'T' && token.Value.IndexOf(':') >= 0)
                     {
+                        ValidateTimeString(token.Value, token.Line, token.Column);
                         return (OdinValues.Time(token.Value), 1);
                     }
                     if (token.Value.Length > 1 && token.Value[0] == 'P')
@@ -572,6 +575,156 @@ namespace Odin.Core.Parsing
             }
 
             return new OdinDate(year, month, day, raw);
+        }
+
+        /// <summary>
+        /// Validate a timestamp string semantically (date portion + time portion + offset).
+        /// </summary>
+        internal static void ValidateTimestampString(string raw, int line, int col)
+        {
+            int tIndex = raw.IndexOf('T');
+            if (tIndex < 0)
+            {
+                throw TimestampError(raw, line, col);
+            }
+
+            string datePart = raw.Substring(0, tIndex);
+            string timePart = raw.Substring(tIndex + 1);
+
+            // Validate date portion via the date validator.
+            ParseDateValue(datePart, line, col);
+
+            // Split off any timezone offset.
+            string offset = null;
+            int zIndex = timePart.IndexOf('Z');
+            if (zIndex >= 0)
+            {
+                offset = "Z";
+                timePart = timePart.Substring(0, zIndex);
+            }
+            else
+            {
+                int signIndex = -1;
+                for (int i = 0; i < timePart.Length; i++)
+                {
+                    if (timePart[i] == '+' || timePart[i] == '-') { signIndex = i; break; }
+                }
+                if (signIndex >= 0)
+                {
+                    offset = timePart.Substring(signIndex);
+                    timePart = timePart.Substring(0, signIndex);
+                }
+            }
+
+            ValidateTimeComponents(timePart, raw, line, col);
+
+            if (offset != null && offset != "Z")
+            {
+                var off = offset.Split(':');
+                if (off.Length != 2
+                    || !int.TryParse(off[0].Substring(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int offHour)
+                    || !int.TryParse(off[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int offMin)
+                    || offHour > 23 || offMin > 59)
+                {
+                    throw new OdinParseException(
+                        ParseErrorCode.UnexpectedCharacter,
+                        line, col,
+                        string.Format(CultureInfo.InvariantCulture, "Invalid timezone offset: {0}", offset));
+                }
+            }
+        }
+
+        /// <summary>
+        /// Validate a time string semantically (THH:MM[:SS[.sss]]).
+        /// </summary>
+        internal static void ValidateTimeString(string raw, int line, int col)
+        {
+            if (raw.Length == 0 || raw[0] != 'T')
+            {
+                throw TimeError(raw, line, col);
+            }
+            ValidateTimeComponents(raw.Substring(1), raw, line, col);
+        }
+
+        /// <summary>
+        /// Validate hour/minute/second component bounds. Seconds may be 60 (leap second);
+        /// hour 24 is valid only as end-of-day midnight (24:00:00).
+        /// </summary>
+        private static void ValidateTimeComponents(string body, string raw, int line, int col)
+        {
+            string[] parts = body.Split(':');
+            if (parts.Length < 2 || parts.Length > 3)
+            {
+                throw TimeError(raw, line, col);
+            }
+
+            if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out int hour)
+                || !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int minute))
+            {
+                throw TimeError(raw, line, col);
+            }
+
+            int second = 0;
+            if (parts.Length == 3)
+            {
+                string secStr = parts[2];
+                int dot = secStr.IndexOf('.');
+                if (dot >= 0) secStr = secStr.Substring(0, dot);
+                if (!int.TryParse(secStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out second))
+                {
+                    throw TimeError(raw, line, col);
+                }
+            }
+
+            if (hour == 24)
+            {
+                if (minute != 0 || second != 0)
+                {
+                    throw new OdinParseException(
+                        ParseErrorCode.UnexpectedCharacter,
+                        line, col,
+                        string.Format(CultureInfo.InvariantCulture, "Invalid hour: {0}", hour));
+                }
+            }
+            else if (hour > 23)
+            {
+                throw new OdinParseException(
+                    ParseErrorCode.UnexpectedCharacter,
+                    line, col,
+                    string.Format(CultureInfo.InvariantCulture, "Invalid hour: {0}", hour));
+            }
+
+            if (minute > 59)
+            {
+                throw new OdinParseException(
+                    ParseErrorCode.UnexpectedCharacter,
+                    line, col,
+                    string.Format(CultureInfo.InvariantCulture, "Invalid minute: {0}", minute));
+            }
+
+            if (second > 60)
+            {
+                throw new OdinParseException(
+                    ParseErrorCode.UnexpectedCharacter,
+                    line, col,
+                    string.Format(CultureInfo.InvariantCulture, "Invalid second: {0}", second));
+            }
+        }
+
+        private static OdinParseException TimestampError(string raw, int line, int col)
+        {
+            return new OdinParseException(
+                ParseErrorCode.UnexpectedCharacter,
+                line, col,
+                string.Format(CultureInfo.InvariantCulture, "Invalid timestamp format: {0}", raw));
+        }
+
+        private static OdinParseException TimeError(string raw, int line, int col)
+        {
+            return new OdinParseException(
+                ParseErrorCode.UnexpectedCharacter,
+                line, col,
+                string.Format(CultureInfo.InvariantCulture, "Invalid time format: {0}", raw));
         }
 
         /// <summary>
