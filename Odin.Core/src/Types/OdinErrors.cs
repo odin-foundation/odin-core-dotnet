@@ -67,6 +67,14 @@ public enum ValidationErrorCode
     CircularReference,
     /// <summary>V013: Unresolved reference.</summary>
     UnresolvedReference,
+    /// <summary>V014: Unsafe regex pattern rejected.</summary>
+    UnsafeRegexPattern,
+    /// <summary>V015: Invalid regex pattern.</summary>
+    InvalidRegexPattern,
+    /// <summary>V016: Pattern validation timed out.</summary>
+    PatternTimeout,
+    /// <summary>V017: Schema definition error.</summary>
+    SchemaDefinitionError,
 }
 
 /// <summary>Transform error codes (T001-T011). API contract — identical across all SDKs.</summary>
@@ -182,6 +190,10 @@ public static class ErrorCodeExtensions
         ValidationErrorCode.UnknownField => "V011",
         ValidationErrorCode.CircularReference => "V012",
         ValidationErrorCode.UnresolvedReference => "V013",
+        ValidationErrorCode.UnsafeRegexPattern => "V014",
+        ValidationErrorCode.InvalidRegexPattern => "V015",
+        ValidationErrorCode.PatternTimeout => "V016",
+        ValidationErrorCode.SchemaDefinitionError => "V017",
         _ => "V000",
     };
 
@@ -201,6 +213,10 @@ public static class ErrorCodeExtensions
         ValidationErrorCode.UnknownField => "Unknown field",
         ValidationErrorCode.CircularReference => "Circular reference",
         ValidationErrorCode.UnresolvedReference => "Unresolved reference",
+        ValidationErrorCode.UnsafeRegexPattern => "Unsafe regex pattern rejected",
+        ValidationErrorCode.InvalidRegexPattern => "Invalid regex pattern",
+        ValidationErrorCode.PatternTimeout => "Pattern validation timed out",
+        ValidationErrorCode.SchemaDefinitionError => "Schema definition error",
         _ => "Unknown error",
     };
 
@@ -220,6 +236,10 @@ public static class ErrorCodeExtensions
         "V011" => ValidationErrorCode.UnknownField,
         "V012" => ValidationErrorCode.CircularReference,
         "V013" => ValidationErrorCode.UnresolvedReference,
+        "V014" => ValidationErrorCode.UnsafeRegexPattern,
+        "V015" => ValidationErrorCode.InvalidRegexPattern,
+        "V016" => ValidationErrorCode.PatternTimeout,
+        "V017" => ValidationErrorCode.SchemaDefinitionError,
         _ => null,
     };
 

@@ -48,6 +48,11 @@ namespace Odin.Core.Validation
             var opts = options ?? ValidateOptions.Default;
             var errors = new List<ValidationError>();
 
+            // 0. Validate schema definition well-formedness (V017) on the unexpanded schema.
+            SchemaDefinitionValidator.Validate(schema, typeRegistry, errors);
+            if (opts.FailFast && errors.Count > 0)
+                return ValidationResult.WithErrors(errors);
+
             // 0. Expand type composition (merge base type fields into derived types)
             schema = ExpandTypeComposition(schema);
 
@@ -219,6 +224,22 @@ namespace Odin.Core.Validation
                         string.Format(CultureInfo.InvariantCulture,
                             "Decimal places mismatch: expected exactly {0}, got {1}",
                             decimalType.DecimalPlaces.Value, actualPlaces)));
+                }
+            }
+
+            // Currency precision (#$.N): enforce exactly N fractional places (V003).
+            if (field.FieldType is CurrencyFieldType currencyType && currencyType.DecimalPlaces.HasValue
+                && value is OdinCurrency curValue)
+            {
+                int actualPlaces = curValue.DecimalPlaces;
+                if (actualPlaces != currencyType.DecimalPlaces.Value)
+                {
+                    errors.Add(new ValidationError(
+                        ValidationErrorCode.ValueOutOfBounds,
+                        path,
+                        string.Format(CultureInfo.InvariantCulture,
+                            "Currency decimal places mismatch: expected exactly {0}, got {1}",
+                            currencyType.DecimalPlaces.Value, actualPlaces)));
                 }
             }
 
@@ -682,179 +703,46 @@ namespace Odin.Core.Validation
                 ValidateCardinality(doc, path, card, errors);
         }
 
-        private static readonly HashSet<string> InvariantKeywords = new HashSet<string> { "true", "false" };
-
-        /// <summary>
-        /// Determine whether any field operand referenced by the expression is present in the
-        /// document with a null value. Absent fields are not treated as null operands.
-        /// </summary>
-        private static bool HasNullOperand(OdinDocument doc, string path, string expr)
-        {
-            foreach (System.Text.RegularExpressions.Match m in
-                System.Text.RegularExpressions.Regex.Matches(expr, "[A-Za-z_][A-Za-z0-9_.]*"))
-            {
-                var token = m.Value;
-                if (InvariantKeywords.Contains(token)) continue;
-                var fullPath = path.Length == 0 ? token : path + "." + token;
-                var value = doc.Get(fullPath);
-                if (value != null && value.IsNull) return true;
-            }
-            return false;
-        }
-
         private static void ValidateInvariant(
             OdinDocument doc,
             string path,
             string expr,
             List<ValidationError> errors)
         {
-            // Spec: any present-but-null operand makes the invariant evaluate to false.
-            if (HasNullOperand(doc, path, expr))
+            expr = expr.Trim();
+
+            InvariantEvaluator.FieldResolver resolve = name =>
+            {
+                var fullPath = path.Length == 0 ? name : path + "." + name;
+                return doc.Get(fullPath);
+            };
+
+            InvariantEvaluator.InvariantResult result;
+            try
+            {
+                result = InvariantEvaluator.Evaluate(expr, resolve);
+            }
+            catch (FormatException)
+            {
+                errors.Add(new ValidationError(
+                    ValidationErrorCode.InvariantViolation,
+                    path,
+                    string.Format(CultureInfo.InvariantCulture,
+                        "Invalid invariant expression: {0}", expr)));
+                return;
+            }
+
+            // Absent operands make the invariant inapplicable.
+            if (!result.Value.HasValue && !result.NullOperand)
+                return;
+
+            if (result.Value == false)
             {
                 errors.Add(new ValidationError(
                     ValidationErrorCode.InvariantViolation,
                     path,
                     string.Format(CultureInfo.InvariantCulture, "Invariant '{0}' violated", expr)));
-                return;
             }
-
-            // Expression evaluator: supports field refs, arithmetic, comparisons
-            string[] ops = { ">=", "<=", "!=", "==", ">", "<", "=" };
-            foreach (var op in ops)
-            {
-                int pos;
-                if (op == "=")
-                {
-                    // For bare '=', must not be preceded by !, <, > and not followed by =
-                    pos = -1;
-                    for (int i = 0; i < expr.Length; i++)
-                    {
-                        if (expr[i] == '=' &&
-                            (i == 0 || (expr[i - 1] != '!' && expr[i - 1] != '<' && expr[i - 1] != '>')) &&
-                            (i + 1 >= expr.Length || expr[i + 1] != '='))
-                        {
-                            pos = i;
-                            break;
-                        }
-                    }
-                }
-                else
-                {
-                    pos = expr.IndexOf(op, StringComparison.Ordinal);
-                }
-
-                if (pos >= 0)
-                {
-                    var lhsExpr = expr.Substring(0, pos).Trim();
-                    var rhsExpr = expr.Substring(pos + op.Length).Trim();
-
-                    var lhsVal = ResolveInvariantExpr(doc, path, lhsExpr);
-                    var rhsVal = ResolveInvariantExpr(doc, path, rhsExpr);
-
-                    if (lhsVal.HasValue && rhsVal.HasValue)
-                    {
-                        string effectiveOp = op == "=" ? "==" : op;
-                        bool passes;
-                        switch (effectiveOp)
-                        {
-                            case ">": passes = lhsVal.Value > rhsVal.Value; break;
-                            case "<": passes = lhsVal.Value < rhsVal.Value; break;
-                            case ">=": passes = lhsVal.Value >= rhsVal.Value; break;
-                            case "<=": passes = lhsVal.Value <= rhsVal.Value; break;
-                            case "==": passes = Math.Abs(lhsVal.Value - rhsVal.Value) < 0.001; break;
-                            case "!=": passes = Math.Abs(lhsVal.Value - rhsVal.Value) >= 0.001; break;
-                            default: passes = true; break;
-                        }
-                        if (!passes)
-                        {
-                            errors.Add(new ValidationError(
-                                ValidationErrorCode.InvariantViolation,
-                                path,
-                                string.Format(CultureInfo.InvariantCulture,
-                                    "Invariant '{0}' violated", expr)));
-                        }
-                    }
-                    return;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Resolve an invariant expression to a numeric value.
-        /// Supports field references, literal numbers, and simple arithmetic (a + b, a - b).
-        /// </summary>
-        private static double? ResolveInvariantExpr(OdinDocument doc, string path, string expr)
-        {
-            expr = expr.Trim();
-
-            // Try literal number
-            if (double.TryParse(expr, NumberStyles.Float, CultureInfo.InvariantCulture, out var literal))
-                return literal;
-
-            // Try arithmetic: a + b or a - b
-            int plusPos = expr.IndexOf(" + ", StringComparison.Ordinal);
-            if (plusPos >= 0)
-            {
-                var left = ResolveInvariantExpr(doc, path, expr.Substring(0, plusPos));
-                var right = ResolveInvariantExpr(doc, path, expr.Substring(plusPos + 3));
-                if (left.HasValue && right.HasValue)
-                    return left.Value + right.Value;
-                return null;
-            }
-            int minusPos = expr.IndexOf(" - ", StringComparison.Ordinal);
-            if (minusPos >= 0)
-            {
-                var left = ResolveInvariantExpr(doc, path, expr.Substring(0, minusPos));
-                var right = ResolveInvariantExpr(doc, path, expr.Substring(minusPos + 3));
-                if (left.HasValue && right.HasValue)
-                    return left.Value - right.Value;
-                return null;
-            }
-
-            // Field reference
-            var fullPath = path.Length == 0 ? expr : path + "." + expr;
-            var val = doc.Get(fullPath);
-            return val?.AsDouble();
-        }
-
-        private static bool EvaluateComparison(OdinValue value, string op, string compare)
-        {
-            // Try numeric comparison
-            var num = value.AsDouble();
-            if (num.HasValue &&
-                double.TryParse(compare, NumberStyles.Float, CultureInfo.InvariantCulture, out var cmpNum))
-            {
-                switch (op)
-                {
-                    case ">": return num.Value > cmpNum;
-                    case "<": return num.Value < cmpNum;
-                    case ">=": return num.Value >= cmpNum;
-                    case "<=": return num.Value <= cmpNum;
-                    case "==": return Math.Abs(num.Value - cmpNum) < double.Epsilon;
-                    case "!=": return Math.Abs(num.Value - cmpNum) >= double.Epsilon;
-                    default: return true;
-                }
-            }
-
-            // Try string comparison
-            var str = value.AsString();
-            if (str != null)
-            {
-                var cmp = compare.Trim('"');
-                int result = string.Compare(str, cmp, StringComparison.Ordinal);
-                switch (op)
-                {
-                    case "==": return result == 0;
-                    case "!=": return result != 0;
-                    case ">": return result > 0;
-                    case "<": return result < 0;
-                    case ">=": return result >= 0;
-                    case "<=": return result <= 0;
-                    default: return true;
-                }
-            }
-
-            return true; // Can't evaluate — skip
         }
 
         private static void ValidateCardinality(

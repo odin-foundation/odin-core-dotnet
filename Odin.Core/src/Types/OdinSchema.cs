@@ -384,6 +384,9 @@ public sealed class TypeRefFieldType : SchemaFieldType
     /// <summary>Referenced type name.</summary>
     public string Name { get; }
 
+    /// <summary>Whether this composition narrows the referenced type(s) via :override.</summary>
+    public bool Override { get; init; }
+
     /// <summary>Creates a type reference field type.</summary>
     public TypeRefFieldType(string name) { Name = name; }
 }
@@ -488,6 +491,9 @@ public sealed class SchemaArray
 
     /// <summary>Whether items must be unique.</summary>
     public bool IsUnique { get; set; }
+
+    /// <summary>Tabular column names declared in the array header ({path[] : a, b}).</summary>
+    public List<string> Columns { get; set; } = new();
 }
 
 /// <summary>An object-level constraint.</summary>

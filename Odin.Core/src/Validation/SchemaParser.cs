@@ -57,6 +57,7 @@ namespace Odin.Core.Validation
             private int? _currentArrayMin;
             private int? _currentArrayMax;
             private bool _currentArrayUnique;
+            private List<string> _currentArrayColumns = new List<string>();
 
             // Relative-header context: last absolute header, plus the sub-path of the
             // current relative header within its parent ({.term} -> "term").
@@ -190,10 +191,12 @@ namespace Odin.Core.Validation
                         MinItems = _currentArrayMin,
                         MaxItems = _currentArrayMax,
                         IsUnique = _currentArrayUnique,
+                        Columns = _currentArrayColumns,
                     };
                     _currentArrayMin = null;
                     _currentArrayMax = null;
                     _currentArrayUnique = false;
+                    _currentArrayColumns = new List<string>();
                 }
 
                 _currentContext = ParserContext.None;
@@ -280,9 +283,21 @@ namespace Odin.Core.Validation
                     return;
                 }
 
-                if (inner.EndsWith("[]", StringComparison.Ordinal))
+                // Array header, optionally tabular: {path[]} or {path[] : col1, col2}.
+                int bracketsPos = inner.IndexOf("[]", StringComparison.Ordinal);
+                if (bracketsPos >= 0)
                 {
-                    var path = inner.Substring(0, inner.Length - 2).Trim();
+                    var path = inner.Substring(0, bracketsPos).Trim();
+                    var afterBrackets = inner.Substring(bracketsPos + 2).Trim();
+                    _currentArrayColumns = new List<string>();
+                    if (afterBrackets.Length > 0 && afterBrackets[0] == ':')
+                    {
+                        foreach (var col in afterBrackets.Substring(1).Split(','))
+                        {
+                            var c = col.Trim();
+                            if (c.Length > 0) _currentArrayColumns.Add(c);
+                        }
+                    }
                     _currentContext = ParserContext.ArrayDef;
                     _currentSectionPath = path;
                     _previousHeaderPath = path;
@@ -329,6 +344,9 @@ namespace Odin.Core.Validation
 
             private void ParseCompositionLine(string value)
             {
+                // A trailing :override (anywhere on the line) marks a narrowing composition.
+                bool isOverride = value.IndexOf(":override", StringComparison.Ordinal) >= 0;
+
                 var members = new List<string>();
                 foreach (var part in value.Split('&'))
                 {
@@ -347,7 +365,7 @@ namespace Odin.Core.Validation
                 var compField = new SchemaField
                 {
                     Name = "_composition",
-                    FieldType = SchemaFieldType.TypeRef(string.Join("&", members)),
+                    FieldType = new TypeRefFieldType(string.Join("&", members)) { Override = isOverride },
                 };
 
                 if (_currentContext == ParserContext.TypeDef)
@@ -609,8 +627,10 @@ namespace Odin.Core.Validation
             }
             else if (rest.StartsWith("#$", StringComparison.Ordinal))
             {
-                fieldType = SchemaFieldType.Currency();
                 rest = rest.Substring(2);
+                // Currency precision: #$.N fixes the number of fractional places; bare #$ defaults to 2.
+                byte? currencyPlaces = TakeDecimalPlaces(ref rest);
+                fieldType = SchemaFieldType.Currency(currencyPlaces ?? 2);
                 defaultRaw = TakeNumericDefault(ref rest);
                 rest = rest.TrimStart();
                 if (defaultRaw.Length > 0 &&
@@ -898,6 +918,10 @@ namespace Odin.Core.Validation
                                 // Enum
                                 var values = ParseEnumValues(inner);
                                 constraints.Add(SchemaConstraint.Enum(values));
+                                remaining = after.Substring(parenEnd + 1).TrimStart();
+                                // A quoted default may trail the enum (e.g. ("a","b") "a").
+                                typedDefault ??= TakeTrailingStringDefault(ref remaining);
+                                continue;
                             }
                             else
                             {
@@ -950,6 +974,10 @@ namespace Odin.Core.Validation
                             var values = ParseEnumValues(inner);
                             constraints.Add(SchemaConstraint.Enum(values));
                             fieldType = SchemaFieldType.Enum(values);
+                            remaining = remaining.Substring(parenEnd + 1).TrimStart();
+                            // A quoted default may trail the enum (e.g. ("a","b") "c").
+                            typedDefault ??= TakeTrailingStringDefault(ref remaining);
+                            continue;
                         }
                         remaining = remaining.Substring(parenEnd + 1).TrimStart();
                         continue;
@@ -1157,6 +1185,21 @@ namespace Odin.Core.Validation
                 return SchemaDefaultValue.Numeric(typeTag, n);
             }
             return null;
+        }
+
+        /// <summary>
+        /// Consume a trailing quoted string default (e.g. the "a" in ("a","b") "a"),
+        /// advancing <paramref name="remaining"/>. Returns null when none is present.
+        /// </summary>
+        private static SchemaDefaultValue? TakeTrailingStringDefault(ref string remaining)
+        {
+            var s = remaining.TrimStart();
+            if (s.Length == 0 || s[0] != '"') return null;
+            int endQ = s.IndexOf('"', 1);
+            if (endQ < 0) return null;
+            var content = s.Substring(1, endQ - 1);
+            remaining = s.Substring(endQ + 1).TrimStart();
+            return SchemaDefaultValue.String(content);
         }
 
         /// <summary>Map a field type to its default-value type tag.</summary>
