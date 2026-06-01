@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using Odin.Core.Resolver;
 using Odin.Core.Types;
 
@@ -15,6 +18,64 @@ namespace Odin.Core.Validation
     {
         private const int MaxCircularRefDepth = 100;
         private static readonly char[] LineSeparators = { '\r', '\n' };
+
+        // ReDoS analysis is data-independent; cache it per distinct pattern string.
+        private static readonly ConcurrentDictionary<string, RedosAnalysis> RedosCache =
+            new ConcurrentDictionary<string, RedosAnalysis>();
+
+        // Compiled regexes (with match timeout) cached per distinct pattern string.
+        // A sentinel marks patterns that fail to compile so the failure is reused.
+        private static readonly Regex InvalidPatternSentinel = new Regex("(?!)");
+        private static readonly ConcurrentDictionary<string, Regex> PatternRegexCache =
+            new ConcurrentDictionary<string, Regex>();
+
+        // Schema-only results (V017 + V012/V013 errors and the composition-expanded
+        // schema) are independent of any document; compute once per schema and reuse.
+        private sealed class CachedSchema
+        {
+            public TypeRegistry? Registry;
+            public List<ValidationError> DefinitionErrors = new List<ValidationError>(); // V017
+            public List<ValidationError> ReferenceErrors = new List<ValidationError>();   // V012/V013
+            public OdinSchemaDefinition Expanded = null!;
+        }
+
+        private static readonly ConditionalWeakTable<OdinSchemaDefinition, CachedSchema> SchemaCache =
+            new ConditionalWeakTable<OdinSchemaDefinition, CachedSchema>();
+
+        // Compute (or reuse) schema-only results for the given schema and registry.
+        // The cache is invalidated when the same schema instance is validated against
+        // a different registry identity.
+        private static CachedSchema GetCachedSchema(OdinSchemaDefinition schema, TypeRegistry? typeRegistry)
+        {
+            if (SchemaCache.TryGetValue(schema, out var cached) && ReferenceEquals(cached.Registry, typeRegistry))
+                return cached;
+
+            var entry = new CachedSchema { Registry = typeRegistry };
+            SchemaDefinitionValidator.Validate(schema, typeRegistry, entry.DefinitionErrors);
+            entry.Expanded = ExpandTypeComposition(schema);
+            // Reference checks run against the expanded schema, matching the validate path.
+            ValidateSchemaReferences(entry.Expanded, typeRegistry, entry.ReferenceErrors);
+
+            lock (SchemaCache)
+            {
+                if (SchemaCache.TryGetValue(schema, out var existing))
+                {
+                    if (ReferenceEquals(existing.Registry, typeRegistry))
+                        return existing;
+                    // Same schema instance, different registry identity: replace.
+                    SchemaCache.Remove(schema);
+                }
+                SchemaCache.Add(schema, entry);
+            }
+            return entry;
+        }
+
+        // Copy cached schema-level errors so callers never receive the cached list.
+        private static void AppendCopies(List<ValidationError> source, List<ValidationError> target)
+        {
+            foreach (var e in source)
+                target.Add(e);
+        }
 
         /// <summary>
         /// Validate a document against a schema.
@@ -48,13 +109,18 @@ namespace Odin.Core.Validation
             var opts = options ?? ValidateOptions.Default;
             var errors = new List<ValidationError>();
 
+            // Schema-only results (V017, V012/V013, expanded schema) are computed once
+            // per schema and reused across documents; append copies so callers never
+            // receive the cached error lists.
+            var cachedSchema = GetCachedSchema(schema, typeRegistry);
+
             // 0. Validate schema definition well-formedness (V017) on the unexpanded schema.
-            SchemaDefinitionValidator.Validate(schema, typeRegistry, errors);
+            AppendCopies(cachedSchema.DefinitionErrors, errors);
             if (opts.FailFast && errors.Count > 0)
                 return ValidationResult.WithErrors(errors);
 
             // 0. Expand type composition (merge base type fields into derived types)
-            schema = ExpandTypeComposition(schema);
+            schema = cachedSchema.Expanded;
 
             // 0b. Expand _composition fields and field-level typeRefs into concrete fields.
             var expandedFields = ExpandFieldComposition(doc, schema, typeRegistry);
@@ -110,7 +176,7 @@ namespace Odin.Core.Validation
             if (opts.ValidateReferences)
             {
                 ValidateReferences(doc, errors);
-                ValidateSchemaReferences(schema, typeRegistry, errors);
+                AppendCopies(cachedSchema.ReferenceErrors, errors);
             }
 
             // 6. Strict mode: check for unknown fields
@@ -467,8 +533,8 @@ namespace Odin.Core.Validation
             string pattern,
             List<ValidationError> errors)
         {
-            // ReDoS safety check
-            var redosCheck = ReDoSProtection.AnalyzePattern(pattern);
+            // ReDoS safety check (cached per pattern)
+            var redosCheck = RedosCache.GetOrAdd(pattern, ReDoSProtection.AnalyzePattern);
             if (!redosCheck.Safe)
             {
                 errors.Add(new ValidationError(
@@ -482,12 +548,20 @@ namespace Odin.Core.Validation
             var str = value.AsString();
             if (str != null)
             {
+                // Compile once per distinct pattern; reuse the cached Regex (or sentinel).
+                var regex = PatternRegexCache.GetOrAdd(pattern, CompilePattern);
+                if (ReferenceEquals(regex, InvalidPatternSentinel))
+                {
+                    errors.Add(new ValidationError(
+                        ValidationErrorCode.PatternMismatch,
+                        path,
+                        string.Format(CultureInfo.InvariantCulture,
+                            "Invalid regex pattern: '{0}'", pattern)));
+                    return;
+                }
+
                 try
                 {
-                    var regex = new System.Text.RegularExpressions.Regex(
-                        pattern,
-                        System.Text.RegularExpressions.RegexOptions.None,
-                        TimeSpan.FromSeconds(1));
                     if (!regex.IsMatch(str))
                     {
                         errors.Add(new ValidationError(
@@ -497,15 +571,7 @@ namespace Odin.Core.Validation
                                 "Value '{0}' does not match pattern '{1}'", str, pattern)));
                     }
                 }
-                catch (ArgumentException)
-                {
-                    errors.Add(new ValidationError(
-                        ValidationErrorCode.PatternMismatch,
-                        path,
-                        string.Format(CultureInfo.InvariantCulture,
-                            "Invalid regex pattern: '{0}'", pattern)));
-                }
-                catch (System.Text.RegularExpressions.RegexMatchTimeoutException)
+                catch (RegexMatchTimeoutException)
                 {
                     errors.Add(new ValidationError(
                         ValidationErrorCode.PatternMismatch,
@@ -513,6 +579,19 @@ namespace Odin.Core.Validation
                         string.Format(CultureInfo.InvariantCulture,
                             "Regex pattern timed out: '{0}'", pattern)));
                 }
+            }
+        }
+
+        // Compile a pattern with a per-match timeout; the sentinel marks invalid patterns.
+        private static Regex CompilePattern(string pattern)
+        {
+            try
+            {
+                return new Regex(pattern, RegexOptions.None, TimeSpan.FromSeconds(1));
+            }
+            catch (ArgumentException)
+            {
+                return InvalidPatternSentinel;
             }
         }
 

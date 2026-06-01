@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using Odin.Core.Types;
@@ -74,24 +75,54 @@ namespace Odin.Core.Validation
             public static readonly Operand Null = new Operand(OpKind.Null, 0, null, false);
         }
 
+        // Parsed expression ASTs cached per expression source string. Parsing is
+        // data-independent; evaluation against a resolver runs per document.
+        private static readonly ConcurrentDictionary<string, Node> AstCache =
+            new ConcurrentDictionary<string, Node>();
+
+        // A parse failure is cached so the FormatException is reproduced without re-parsing.
+        private sealed class ParseErrorNode : Node
+        {
+            public string Message { get; }
+            public ParseErrorNode(string message) { Message = message; }
+        }
+
+        private static Node ParseToAst(string expr)
+        {
+            try
+            {
+                var tokens = Tokenize(expr);
+                var parser = new Parser(tokens);
+                var node = parser.ParseExpression();
+                if (parser.HasMore)
+                    throw new FormatException("Unexpected trailing tokens in invariant expression");
+                return node;
+            }
+            catch (FormatException ex)
+            {
+                return new ParseErrorNode(ex.Message);
+            }
+        }
+
         /// <summary>Parse and evaluate an invariant expression against document field values.</summary>
         public static InvariantResult Evaluate(string expr, FieldResolver resolve)
         {
-            var tokens = Tokenize(expr);
-            var parser = new Parser(tokens, resolve);
-            var final = parser.ParseExpression();
-            if (parser.HasMore)
-                throw new FormatException("Unexpected trailing tokens in invariant expression");
+            var ast = AstCache.GetOrAdd(expr, ParseToAst);
+            if (ast is ParseErrorNode err)
+                throw new FormatException(err.Message);
+
+            var eval = new Evaluator(resolve);
+            var final = eval.Eval(ast);
 
             bool? result;
-            if (parser.NullOperand)
+            if (eval.NullOperand)
                 result = false;
-            else if (parser.AbsentOperand)
+            else if (eval.AbsentOperand)
                 result = null;
             else
                 result = ToBool(final);
 
-            return new InvariantResult(result, parser.NullOperand);
+            return new InvariantResult(result, eval.NullOperand);
         }
 
         private static List<Token> Tokenize(string expr)
@@ -143,127 +174,161 @@ namespace Odin.Core.Validation
             return tokens;
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // AST
+        // ─────────────────────────────────────────────────────────────────────
+
+        private abstract class Node { }
+
+        private enum NodeOp { LogicOr, LogicAnd, Equality, Comparison, Additive, Multiplicative }
+
+        private sealed class BinaryNode : Node
+        {
+            public NodeOp Group { get; }
+            public string Op { get; }
+            public Node Left { get; }
+            public Node Right { get; }
+            public BinaryNode(NodeOp group, string op, Node left, Node right)
+            {
+                Group = group; Op = op; Left = left; Right = right;
+            }
+        }
+
+        private sealed class NotNode : Node
+        {
+            public Node Operand { get; }
+            public NotNode(Node operand) { Operand = operand; }
+        }
+
+        private sealed class NumberNode : Node
+        {
+            public double Value { get; }
+            public NumberNode(double value) { Value = value; }
+        }
+
+        private sealed class StringNode : Node
+        {
+            public string Value { get; }
+            public StringNode(string value) { Value = value; }
+        }
+
+        private sealed class BoolNode : Node
+        {
+            public bool Value { get; }
+            public BoolNode(bool value) { Value = value; }
+        }
+
+        private sealed class IdentNode : Node
+        {
+            public string Name { get; }
+            public IdentNode(string name) { Name = name; }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Parser (token stream -> AST)
+        // ─────────────────────────────────────────────────────────────────────
+
         private sealed class Parser
         {
             private readonly List<Token> _tokens;
-            private readonly FieldResolver _resolve;
             private int _pos;
 
-            public bool AbsentOperand { get; private set; }
-            public bool NullOperand { get; private set; }
             public bool HasMore => _pos < _tokens.Count;
 
-            public Parser(List<Token> tokens, FieldResolver resolve)
+            public Parser(List<Token> tokens)
             {
                 _tokens = tokens;
-                _resolve = resolve;
             }
 
-            private Token? Peek() => _pos < _tokens.Count ? _tokens[_pos] : (Token?)null;
             private Token Next() => _tokens[_pos++];
             private string? PeekText() => _pos < _tokens.Count ? _tokens[_pos].Text : null;
 
-            public Operand ParseExpression() => ParseLogicOr();
+            public Node ParseExpression() => ParseLogicOr();
 
-            private Operand ParseLogicOr()
+            private Node ParseLogicOr()
             {
                 var left = ParseLogicAnd();
                 while (PeekText() == "||")
                 {
-                    Next();
+                    var op = Next().Text;
                     var right = ParseLogicAnd();
-                    left = Operand.Bool(ToBool(left) || ToBool(right));
+                    left = new BinaryNode(NodeOp.LogicOr, op, left, right);
                 }
                 return left;
             }
 
-            private Operand ParseLogicAnd()
+            private Node ParseLogicAnd()
             {
                 var left = ParseEquality();
                 while (PeekText() == "&&")
                 {
-                    Next();
+                    var op = Next().Text;
                     var right = ParseEquality();
-                    left = Operand.Bool(ToBool(left) && ToBool(right));
+                    left = new BinaryNode(NodeOp.LogicAnd, op, left, right);
                 }
                 return left;
             }
 
-            private Operand ParseEquality()
+            private Node ParseEquality()
             {
                 var left = ParseComparison();
                 while (PeekText() == "==" || PeekText() == "!=" || PeekText() == "=")
                 {
                     var op = Next().Text;
                     var right = ParseComparison();
-                    bool eq = LooseEquals(left, right);
-                    left = Operand.Bool(op == "!=" ? !eq : eq);
+                    left = new BinaryNode(NodeOp.Equality, op, left, right);
                 }
                 return left;
             }
 
-            private Operand ParseComparison()
+            private Node ParseComparison()
             {
                 var left = ParseAdditive();
                 while (PeekText() == ">" || PeekText() == "<" || PeekText() == ">=" || PeekText() == "<=")
                 {
                     var op = Next().Text;
                     var right = ParseAdditive();
-                    left = Operand.Bool(Compare(left, op, right));
+                    left = new BinaryNode(NodeOp.Comparison, op, left, right);
                 }
                 return left;
             }
 
-            private Operand ParseAdditive()
+            private Node ParseAdditive()
             {
                 var left = ParseMultiplicative();
                 while (PeekText() == "+" || PeekText() == "-")
                 {
                     var op = Next().Text;
                     var right = ParseMultiplicative();
-                    var ln = ToNum(left);
-                    var rn = ToNum(right);
-                    if (!ln.HasValue || !rn.HasValue)
-                        left = Operand.Number(double.NaN);
-                    else
-                        left = Operand.Number(op == "+" ? ln.Value + rn.Value : ln.Value - rn.Value);
+                    left = new BinaryNode(NodeOp.Additive, op, left, right);
                 }
                 return left;
             }
 
-            private Operand ParseMultiplicative()
+            private Node ParseMultiplicative()
             {
                 var left = ParseUnary();
                 while (PeekText() == "*" || PeekText() == "/" || PeekText() == "%")
                 {
                     var op = Next().Text;
                     var right = ParseUnary();
-                    var ln = ToNum(left);
-                    var rn = ToNum(right);
-                    if (!ln.HasValue || !rn.HasValue)
-                        left = Operand.Number(double.NaN);
-                    else if (op == "*")
-                        left = Operand.Number(ln.Value * rn.Value);
-                    else if (op == "/")
-                        left = Operand.Number(rn.Value == 0 ? double.NaN : ln.Value / rn.Value);
-                    else
-                        left = Operand.Number(rn.Value == 0 ? double.NaN : ln.Value % rn.Value);
+                    left = new BinaryNode(NodeOp.Multiplicative, op, left, right);
                 }
                 return left;
             }
 
-            private Operand ParseUnary()
+            private Node ParseUnary()
             {
                 if (PeekText() == "!")
                 {
                     Next();
                     var operand = ParseUnary();
-                    return Operand.Bool(!ToBool(operand));
+                    return new NotNode(operand);
                 }
                 return ParsePrimary();
             }
 
-            private Operand ParsePrimary()
+            private Node ParsePrimary()
             {
                 if (!HasMore) throw new FormatException("Unexpected end of invariant expression");
                 var tok = Next();
@@ -280,29 +345,108 @@ namespace Odin.Core.Validation
                     if (!double.TryParse(tok.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var n))
                         throw new FormatException(
                             string.Format(CultureInfo.InvariantCulture, "Invalid number '{0}'", tok.Text));
-                    return Operand.Number(n);
+                    return new NumberNode(n);
                 }
                 if (tok.Kind == TokenKind.String)
-                    return Operand.String(tok.Text);
+                    return new StringNode(tok.Text);
                 if (tok.Kind == TokenKind.Ident)
                 {
-                    if (tok.Text == "true") return Operand.Bool(true);
-                    if (tok.Text == "false") return Operand.Bool(false);
-                    var value = _resolve(tok.Text);
-                    if (value == null)
-                    {
-                        AbsentOperand = true;
-                        return Operand.Number(double.NaN);
-                    }
-                    if (value.IsNull)
-                    {
-                        NullOperand = true;
-                        return Operand.Null;
-                    }
-                    return OperandFromValue(value);
+                    if (tok.Text == "true") return new BoolNode(true);
+                    if (tok.Text == "false") return new BoolNode(false);
+                    return new IdentNode(tok.Text);
                 }
                 throw new FormatException(
                     string.Format(CultureInfo.InvariantCulture, "Unexpected token '{0}'", tok.Text));
+            }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Evaluator (AST + resolver -> Operand)
+        // ─────────────────────────────────────────────────────────────────────
+
+        private sealed class Evaluator
+        {
+            private readonly FieldResolver _resolve;
+
+            public bool AbsentOperand { get; private set; }
+            public bool NullOperand { get; private set; }
+
+            public Evaluator(FieldResolver resolve)
+            {
+                _resolve = resolve;
+            }
+
+            public Operand Eval(Node node)
+            {
+                switch (node)
+                {
+                    case NumberNode num: return Operand.Number(num.Value);
+                    case StringNode str: return Operand.String(str.Value);
+                    case BoolNode b: return Operand.Bool(b.Value);
+                    case IdentNode id:
+                    {
+                        var value = _resolve(id.Name);
+                        if (value == null)
+                        {
+                            AbsentOperand = true;
+                            return Operand.Number(double.NaN);
+                        }
+                        if (value.IsNull)
+                        {
+                            NullOperand = true;
+                            return Operand.Null;
+                        }
+                        return OperandFromValue(value);
+                    }
+                    case NotNode notNode:
+                        return Operand.Bool(!ToBool(Eval(notNode.Operand)));
+                    case BinaryNode bin:
+                        return EvalBinary(bin);
+                }
+                throw new FormatException("Invalid invariant AST node");
+            }
+
+            private Operand EvalBinary(BinaryNode bin)
+            {
+                // Both operands are always evaluated so absent/null flags are observed
+                // for every referenced field, matching non-short-circuiting semantics.
+                var left = Eval(bin.Left);
+                var right = Eval(bin.Right);
+                switch (bin.Group)
+                {
+                    case NodeOp.LogicOr:
+                        return Operand.Bool(ToBool(left) || ToBool(right));
+                    case NodeOp.LogicAnd:
+                        return Operand.Bool(ToBool(left) && ToBool(right));
+                    case NodeOp.Equality:
+                    {
+                        bool eq = LooseEquals(left, right);
+                        return Operand.Bool(bin.Op == "!=" ? !eq : eq);
+                    }
+                    case NodeOp.Comparison:
+                        return Operand.Bool(Compare(left, bin.Op, right));
+                    case NodeOp.Additive:
+                    {
+                        var ln = ToNum(left);
+                        var rn = ToNum(right);
+                        if (!ln.HasValue || !rn.HasValue)
+                            return Operand.Number(double.NaN);
+                        return Operand.Number(bin.Op == "+" ? ln.Value + rn.Value : ln.Value - rn.Value);
+                    }
+                    case NodeOp.Multiplicative:
+                    {
+                        var ln = ToNum(left);
+                        var rn = ToNum(right);
+                        if (!ln.HasValue || !rn.HasValue)
+                            return Operand.Number(double.NaN);
+                        if (bin.Op == "*")
+                            return Operand.Number(ln.Value * rn.Value);
+                        if (bin.Op == "/")
+                            return Operand.Number(rn.Value == 0 ? double.NaN : ln.Value / rn.Value);
+                        return Operand.Number(rn.Value == 0 ? double.NaN : ln.Value % rn.Value);
+                    }
+                }
+                throw new FormatException("Invalid invariant operator group");
             }
         }
 

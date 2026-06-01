@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Odin.Core.Types;
 
@@ -1148,22 +1149,23 @@ namespace Odin.Core.Transform
         private static void ProcessMapping(FieldMapping mapping, ExecContext ctx, DynValue currentSource, ref DynValue output, string pathPrefix)
         {
             var outputSnapshot = output;
+            var mods = GetMappingMods(mapping);
             try
             {
                 // Field-level :if / :unless guards (truthy path or `path op value`).
-                var ifDir = FindDirective(mapping.Directives, "if");
+                var ifDir = mods.IfDir;
                 if (ifDir != null && !EvaluateFieldCondition(ifDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot))
                     return;
-                var unlessDir = FindDirective(mapping.Directives, "unless");
+                var unlessDir = mods.UnlessDir;
                 if (unlessDir != null && EvaluateFieldCondition(unlessDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot))
                     return;
 
                 // A :default rescues a missing lookup; suppress errors raised during evaluation.
-                bool hasDefaultModifier = FindDirective(mapping.Directives, "default") != null;
+                bool hasDefaultModifier = mods.DefaultDir != null;
                 int errorsBefore = hasDefaultModifier ? ctx.Errors.Count : 0;
 
                 DynValue val;
-                var objectDir = FindDirective(mapping.Directives, "object");
+                var objectDir = mods.ObjectDir;
                 if (objectDir != null)
                     val = BuildInlineObject(objectDir.Value?.AsString() ?? "", ctx, currentSource, outputSnapshot);
                 else
@@ -1191,14 +1193,14 @@ namespace Odin.Core.Transform
                 }
 
                 // Validation modifiers: :validate / :enum / :range (honors onValidation policy).
-                if (!ValidateFieldValue(val, mapping, ctx)) return;
+                if (mods.ValidationActive && !ValidateFieldValue(val, mapping, ctx, mods)) return;
 
                 // Missing source path: a required field always fails (T005); an ordinary
                 // field honors the onMissing policy (fail -> T005, warn -> warning,
                 // skip/default -> keep null). A path present with a null value is not
                 // "missing" — a required present-null field is SOURCE_MISSING.
                 bool isRequired = mapping.Modifiers != null && mapping.Modifiers.Required;
-                if (val.Type == DynValueType.Null && IsCopySourceAbsent(mapping, ctx, currentSource))
+                if (val.Type == DynValueType.Null && IsCopySourceAbsent(mapping, ctx, currentSource, mods))
                 {
                     var rawPath = ((CopyExpression)mapping.Expression).Path;
                     var cleanPath = rawPath.StartsWith("@", StringComparison.Ordinal) ? rawPath.Substring(1) : rawPath;
@@ -1248,11 +1250,11 @@ namespace Odin.Core.Transform
                 }
 
                 // :raw emits inline JSON structurally instead of an escaped string.
-                if (FindDirective(mapping.Directives, "raw") != null)
+                if (mods.RawDir != null)
                     val = ParseRawJsonValue(val);
 
                 // :array wraps the value in a single-element array.
-                if (FindDirective(mapping.Directives, "array") != null)
+                if (mods.ArrayDir != null)
                     val = DynValue.Array(new List<DynValue> { val });
 
                 // Apply confidential at mapping level
@@ -1354,6 +1356,105 @@ namespace Odin.Core.Transform
             return null;
         }
 
+        // ─────────────────────────────────────────────────────────────────────
+        // Per-mapping modifier precompute
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Directive references, derived flags, and compiled validation for a mapping.
+        // Computed once per FieldMapping (its modifiers are data-independent and shared
+        // across executions) and reused across records.
+        private sealed class MappingMods
+        {
+            public OdinDirective? IfDir;
+            public OdinDirective? UnlessDir;
+            public OdinDirective? DefaultDir;
+            public OdinDirective? ObjectDir;
+            public OdinDirective? ValidateDir;
+            public OdinDirective? EnumDir;
+            public OdinDirective? RangeDir;
+            public OdinDirective? RawDir;
+            public OdinDirective? ArrayDir;
+            public bool HasDefaultOrObject;
+            public bool ValidationActive;
+
+            // Precompiled :validate pattern. RegexValid is false when the pattern fails to compile.
+            public System.Text.RegularExpressions.Regex? ValidateRegex;
+            public bool ValidatePatternPresent;
+            public bool RegexValid;
+
+            // Precompiled :enum allowed set (preserves declared order for the label).
+            public HashSet<string>? EnumSet;
+            public List<string>? EnumValues;
+            public bool EnumPresent;
+
+            // Precompiled :range bounds.
+            public bool RangePresent;
+            public string? RangeStr;
+            public double? RangeMin;
+            public double? RangeMax;
+        }
+
+        private static readonly ConditionalWeakTable<FieldMapping, MappingMods> MappingModsCache =
+            new ConditionalWeakTable<FieldMapping, MappingMods>();
+
+        private static MappingMods GetMappingMods(FieldMapping mapping)
+            => MappingModsCache.GetValue(mapping, BuildMappingMods);
+
+        private static MappingMods BuildMappingMods(FieldMapping mapping)
+        {
+            var mods = new MappingMods
+            {
+                IfDir = FindDirective(mapping.Directives, "if"),
+                UnlessDir = FindDirective(mapping.Directives, "unless"),
+                DefaultDir = FindDirective(mapping.Directives, "default"),
+                ObjectDir = FindDirective(mapping.Directives, "object"),
+                ValidateDir = FindDirective(mapping.Directives, "validate"),
+                EnumDir = FindDirective(mapping.Directives, "enum"),
+                RangeDir = FindDirective(mapping.Directives, "range"),
+                RawDir = FindDirective(mapping.Directives, "raw"),
+                ArrayDir = FindDirective(mapping.Directives, "array"),
+            };
+            mods.HasDefaultOrObject = mods.DefaultDir != null || mods.ObjectDir != null;
+            mods.ValidationActive = mods.ValidateDir != null || mods.EnumDir != null || mods.RangeDir != null;
+
+            if (mods.ValidateDir != null && mods.ValidateDir.Value?.AsString() != null)
+            {
+                mods.ValidatePatternPresent = true;
+                var pattern = mods.ValidateDir.Value!.AsString()!;
+                try
+                {
+                    mods.ValidateRegex = new System.Text.RegularExpressions.Regex(pattern);
+                    mods.RegexValid = true;
+                }
+                catch
+                {
+                    mods.RegexValid = false;
+                }
+            }
+
+            if (mods.EnumDir != null && mods.EnumDir.Value?.AsString() != null)
+            {
+                mods.EnumPresent = true;
+                var values = new List<string>();
+                foreach (var v in mods.EnumDir.Value!.AsString()!.Split(','))
+                    values.Add(v.Trim().Trim('"', '\''));
+                mods.EnumValues = values;
+                mods.EnumSet = new HashSet<string>(values);
+            }
+
+            if (mods.RangeDir != null && mods.RangeDir.Value?.AsString() != null)
+            {
+                mods.RangePresent = true;
+                var rangeStr = mods.RangeDir.Value!.AsString()!;
+                mods.RangeStr = rangeStr;
+                var parts = rangeStr.Split(new[] { ".." }, StringSplitOptions.None);
+                mods.RangeMin = parts.Length > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var mn) ? mn : (double?)null;
+                mods.RangeMax = parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var mx) ? mx : (double?)null;
+            }
+
+            return mods;
+        }
+
         // Evaluate a field-level :if / :unless condition (truthy path or `path op value`).
         // The left path resolves against the current loop item when present, else source.
         private static bool EvaluateFieldCondition(string condition, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
@@ -1449,14 +1550,10 @@ namespace Odin.Core.Transform
 
         // Validate a value against :validate / :enum / :range modifiers.
         // Returns false when the field should be dropped (onValidation = skip or fail).
-        private static bool ValidateFieldValue(DynValue val, FieldMapping mapping, ExecContext ctx)
+        private static bool ValidateFieldValue(DynValue val, FieldMapping mapping, ExecContext ctx, MappingMods mods)
         {
             if (val.Type == DynValueType.Null) return true;
-
-            var validateDir = FindDirective(mapping.Directives, "validate");
-            var enumDir = FindDirective(mapping.Directives, "enum");
-            var rangeDir = FindDirective(mapping.Directives, "range");
-            if (validateDir == null && enumDir == null && rangeDir == null) return true;
+            if (!mods.ValidationActive) return true;
 
             string policy = "fail";
             if (ctx.Target != null && ctx.Target.Options.TryGetValue("onValidation", out var p))
@@ -1464,33 +1561,28 @@ namespace Odin.Core.Transform
 
             var failures = new List<string>();
 
-            if (validateDir != null && validateDir.Value?.AsString() != null)
+            if (mods.ValidatePatternPresent)
             {
-                string pattern = validateDir.Value!.AsString()!;
+                string pattern = mods.ValidateDir!.Value!.AsString()!;
                 string str = CoerceToString(val);
-                bool matched = false;
-                try { matched = System.Text.RegularExpressions.Regex.IsMatch(str, pattern); }
-                catch { failures.Add($"invalid validation pattern '{pattern}'"); }
-                if (!matched && failures.Count == 0)
+                if (!mods.RegexValid)
+                    failures.Add($"invalid validation pattern '{pattern}'");
+                else if (!mods.ValidateRegex!.IsMatch(str))
                     failures.Add($"value '{str}' does not match pattern '{pattern}'");
             }
 
-            if (enumDir != null && enumDir.Value?.AsString() != null)
+            if (mods.EnumPresent)
             {
-                var allowed = new List<string>();
-                foreach (var v in enumDir.Value!.AsString()!.Split(','))
-                    allowed.Add(v.Trim().Trim('"', '\''));
                 string str = CoerceToString(val);
-                if (!allowed.Contains(str))
-                    failures.Add($"value '{str}' is not one of [{string.Join(", ", allowed)}]");
+                if (!mods.EnumSet!.Contains(str))
+                    failures.Add($"value '{str}' is not one of [{string.Join(", ", mods.EnumValues!)}]");
             }
 
-            if (rangeDir != null && rangeDir.Value?.AsString() != null)
+            if (mods.RangePresent)
             {
-                string rangeStr = rangeDir.Value!.AsString()!;
-                var parts = rangeStr.Split(new[] { ".." }, StringSplitOptions.None);
-                double? min = parts.Length > 0 && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var mn) ? mn : (double?)null;
-                double? max = parts.Length > 1 && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var mx) ? mx : (double?)null;
+                string rangeStr = mods.RangeStr!;
+                double? min = mods.RangeMin;
+                double? max = mods.RangeMax;
                 var num = ToComparableNumber(val);
                 if (num == null)
                     failures.Add($"value '{CoerceToString(val)}' is not numeric for range {rangeStr}");
@@ -1961,12 +2053,11 @@ namespace Odin.Core.Transform
         // Whether a mapping copies a source path that is absent (the key is not
         // present) — distinct from a path present with a null value. Only plain copy
         // expressions qualify; verbs, literals, objects, and special paths never do.
-        private static bool IsCopySourceAbsent(FieldMapping mapping, ExecContext ctx, DynValue currentSource)
+        private static bool IsCopySourceAbsent(FieldMapping mapping, ExecContext ctx, DynValue currentSource, MappingMods mods)
         {
             if (mapping.Expression is not CopyExpression copy) return false;
             // A :default or :object supplies its own value; not a missing-source error.
-            if (FindDirective(mapping.Directives, "default") != null
-                || FindDirective(mapping.Directives, "object") != null) return false;
+            if (mods.HasDefaultOrObject) return false;
 
             var path = copy.Path.Trim();
             if (path.StartsWith("@", StringComparison.Ordinal)) path = path.Substring(1);

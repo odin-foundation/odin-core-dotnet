@@ -856,10 +856,17 @@ namespace Odin.Core.Transform
         // Verb Arity Map
         // ─────────────────────────────────────────────────────────────────────
 
+        // Verb arity depends only on the verb name; cache the switch result per name.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> VerbArityCache =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+
         /// <summary>
         /// Gets the expected argument count for a verb. Returns -1 for variadic verbs.
         /// </summary>
         internal static int GetVerbArity(string verb)
+            => VerbArityCache.GetOrAdd(verb, ComputeVerbArity);
+
+        private static int ComputeVerbArity(string verb)
         {
             switch (verb)
             {
