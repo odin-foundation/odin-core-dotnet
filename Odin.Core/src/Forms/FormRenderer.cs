@@ -2,11 +2,13 @@
 //
 // Renders a parsed OdinForm into a complete, accessible HTML string.
 // Supports absolute-positioned layout matching print coordinates,
-// ARIA attributes, skip navigation, and optional data binding.
+// ARIA attributes, skip navigation, region repetition, overflow
+// pagination, and optional data binding.
 
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Odin.Core.Types;
 
 namespace Odin.Core.Forms;
@@ -33,55 +35,157 @@ public static class FormRenderer
         var className = options?.ClassName != null ? " " + options.ClassName : "";
         var unit      = form.PageDefaults?.Unit ?? "inch";
 
+        // Two-pass: first determine the concrete render plan (pages + overflow),
+        // then render with the final total page count so @odin.total_pages resolves.
+        var plan = BuildRenderPlan(form, data);
+        var totalPages = plan.Count;
+        var pageW = FormUnits.ToPixels(form.PageDefaults?.Width ?? 8.5, unit);
+        var pageH = FormUnits.ToPixels(form.PageDefaults?.Height ?? 11.0, unit);
+
         var parts = new List<string>();
-
-        // Wrapper
         parts.Add("<form role=\"form\" aria-label=\"" + EscapeAttr(title) + "\" class=\"odin-form" + className + "\">");
-
-        // Skip link
         parts.Add(SkipLinkHtml(title));
-
-        // Style tag
         parts.Add("<style>" + GenerateFormCss() + "\n" + GeneratePrintCss() + "</style>");
 
-        // Pages
-        for (var pageIndex = 0; pageIndex < form.Pages.Count; pageIndex++)
-            parts.Add(RenderPage(form.Pages[pageIndex], pageIndex, unit, form, data));
+        for (var i = 0; i < plan.Count; i++)
+        {
+            var ctx = new RenderContext
+            {
+                PageNumber  = i + 1,
+                TotalPages  = totalPages,
+                Unit        = unit,
+                Data        = data,
+                PageWidthPx = pageW,
+                PageHeightPx = pageH,
+            };
+            parts.Add(RenderPlannedPage(plan[i], ctx));
+        }
 
         parts.Add("</form>");
-
         return string.Concat(parts);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Render Plan
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private sealed class RenderContext
+    {
+        public int PageNumber;
+        public int TotalPages;
+        public string Unit = "inch";
+        public OdinDocument? Data;
+        public double PageWidthPx;
+        public double PageHeightPx;
+    }
+
+    private readonly struct ItemSlice
+    {
+        public readonly int Start;
+        public readonly int Count;
+        public readonly string Bind;
+        public ItemSlice(int start, int count, string bind) { Start = start; Count = count; Bind = bind; }
+    }
+
+    private sealed class PlannedPage
+    {
+        public IReadOnlyList<FormElement> Elements = Array.Empty<FormElement>();
+        public Dictionary<string, ItemSlice>? ItemSlices;
+    }
+
+    /// <summary>
+    /// Build the ordered list of output pages, expanding region overflow when
+    /// bound array data is present. Without data, concrete pages render as-is.
+    /// </summary>
+    private static List<PlannedPage> BuildRenderPlan(OdinForm form, OdinDocument? data)
+    {
+        var plan = new List<PlannedPage>();
+
+        foreach (var page in form.Pages)
+        {
+            plan.Add(new PlannedPage { Elements = page.Elements });
+
+            if (data == null) continue;
+
+            foreach (var el in page.Elements)
+            {
+                if (el is not RegionElement region) continue;
+                if (string.IsNullOrEmpty(region.Bind) || region.Max == null || string.IsNullOrEmpty(region.Overflow))
+                    continue;
+                if (region.Max.Value < 1) continue;
+                var count = BoundArrayLength(region.Bind!, data);
+                if (count <= region.Max.Value) continue;
+
+                var consumed = region.Max.Value;
+                var templateName = region.Overflow!.StartsWith("@", StringComparison.Ordinal)
+                    ? region.Overflow.Substring(1)
+                    : null;
+                var guard = 0;
+                while (consumed < count && guard++ < 10000)
+                {
+                    PageTemplate? tpl = null;
+                    if (templateName != null)
+                        form.Templates?.TryGetValue(templateName, out tpl);
+
+                    RegionElement? tplRegion = null;
+                    if (tpl != null)
+                    {
+                        foreach (var e in tpl.Elements)
+                            if (e is RegionElement re && re.Name == region.Name) { tplRegion = re; break; }
+                    }
+
+                    var candidateMax = tplRegion?.Max ?? region.Max.Value;
+                    var pageMax = candidateMax >= 1 ? candidateMax : region.Max.Value;
+
+                    var slices = new Dictionary<string, ItemSlice>(StringComparer.Ordinal)
+                    {
+                        [region.Name] = new ItemSlice(consumed, Math.Min(pageMax, count - consumed), region.Bind!),
+                    };
+                    var elements = tpl != null ? tpl.Elements : page.Elements;
+                    plan.Add(new PlannedPage { Elements = elements, ItemSlices = slices });
+                    consumed += pageMax;
+
+                    if (tplRegion?.Overflow != null && tplRegion.Overflow.StartsWith("@", StringComparison.Ordinal))
+                        templateName = tplRegion.Overflow.Substring(1);
+                }
+            }
+        }
+
+        return plan;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Page Rendering
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static string RenderPage(FormPage page, int pageIndex, string unit, OdinForm form, OdinDocument? data)
+    private static readonly HashSet<string> FieldTypes = new HashSet<string>(StringComparer.Ordinal)
     {
-        var w = FormUnits.ToPixels(form.PageDefaults?.Width ?? 8.5, unit);
-        var h = FormUnits.ToPixels(form.PageDefaults?.Height ?? 11.0, unit);
+        "field.text", "field.checkbox", "field.radio", "field.select",
+        "field.multiselect", "field.date", "field.signature",
+    };
 
+    private static string RenderPlannedPage(PlannedPage page, RenderContext ctx)
+    {
+        var pageIndex = ctx.PageNumber - 1;
         var parts = new List<string>();
-        parts.Add("<div class=\"odin-form-page\" id=\"odin-form-content\" style=\"width:" + Px(w) + ";height:" + Px(h) + ";\">");
+        parts.Add("<div class=\"odin-form-page\" id=\"odin-form-content\" data-page=\"" +
+            ctx.PageNumber.ToString(CultureInfo.InvariantCulture) + "\" style=\"width:" +
+            Px(ctx.PageWidthPx) + ";height:" + Px(ctx.PageHeightPx) + ";\">");
 
-        // Render non-field elements in document order
-        var fieldTypes = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "field.text", "field.checkbox", "field.radio", "field.select",
-            "field.multiselect", "field.date", "field.signature",
-        };
+        // Background images first (lowest z-index), then non-field elements, then fields.
+        foreach (var el in page.Elements)
+            if (el is ImageElement img && img.Background == true)
+                parts.Add(RenderElement(el, pageIndex, ctx, page));
 
         foreach (var el in page.Elements)
         {
-            if (!fieldTypes.Contains(el.Type))
-                parts.Add(RenderElement(el, pageIndex, unit, data));
+            if (el is ImageElement img && img.Background == true) continue;
+            if (!FieldTypes.Contains(el.Type))
+                parts.Add(RenderElement(el, pageIndex, ctx, page));
         }
 
-        // Render field elements sorted by tab order (top-to-bottom, left-to-right)
-        var sortedFields = TabOrderSort(page.Elements);
-        foreach (var el in sortedFields)
-            parts.Add(RenderElement(el, pageIndex, unit, data));
+        foreach (var el in TabOrderSort(page.Elements))
+            parts.Add(RenderElement(el, pageIndex, ctx, page));
 
         parts.Add("</div>");
         return string.Concat(parts);
@@ -91,8 +195,9 @@ public static class FormRenderer
     // Element Dispatch
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static string RenderElement(FormElement el, int pageIndex, string unit, OdinDocument? data)
+    private static string RenderElement(FormElement el, int pageIndex, RenderContext ctx, PlannedPage page)
     {
+        var unit = ctx.Unit;
         switch (el.Type)
         {
             case "line":              return RenderLine((LineElement)el, unit);
@@ -102,17 +207,43 @@ public static class FormRenderer
             case "polygon":           return RenderPolygon((PolygonElement)el, unit);
             case "polyline":          return RenderPolyline((PolylineElement)el, unit);
             case "path":              return RenderPath((PathElement)el, unit);
-            case "text":              return RenderText((TextElement)el, unit);
-            case "img":               return RenderImage((ImageElement)el, unit);
-            case "field.text":        return RenderTextField((TextFieldElement)el, pageIndex, unit, data);
-            case "field.checkbox":    return RenderCheckbox((CheckboxElement)el, pageIndex, unit, data);
-            case "field.radio":       return RenderRadio((RadioElement)el, pageIndex, unit, data);
-            case "field.select":      return RenderSelect((SelectElement)el, pageIndex, unit, data);
-            case "field.multiselect": return RenderMultiselect((MultiselectElement)el, pageIndex, unit, data);
-            case "field.date":        return RenderDate((DateElement)el, pageIndex, unit, data);
-            case "field.signature":   return RenderSignature((SignatureElement)el, pageIndex, unit);
+            case "text":              return RenderText((TextElement)el, ctx);
+            case "img":               return RenderImage((ImageElement)el, ctx);
+            case "barcode":           return RenderBarcode((BarcodeElement)el, ctx);
+            case "field.text":        return RenderTextField((TextFieldElement)el, pageIndex, ctx);
+            case "field.checkbox":    return RenderCheckbox((CheckboxElement)el, pageIndex, ctx);
+            case "field.radio":       return RenderRadio((RadioElement)el, pageIndex, ctx);
+            case "field.select":      return RenderSelect((SelectElement)el, pageIndex, ctx);
+            case "field.multiselect": return RenderMultiselect((MultiselectElement)el, pageIndex, ctx);
+            case "field.date":        return RenderDate((DateElement)el, pageIndex, ctx);
+            case "field.signature":   return RenderSignature((SignatureElement)el, pageIndex, ctx);
+            case "region":            return RenderRegion((RegionElement)el, ctx, page);
             default:                  return "";
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Interpolation
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static readonly Regex InterpolationToken =
+        new Regex(@"\{@odin\.([a-z_]+)\}", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Resolve {@odin.page} / {@odin.total_pages} tokens in a string. Unknown
+    /// {@odin.*} tokens are left untouched.
+    /// </summary>
+    private static string Interpolate(string text, RenderContext ctx)
+    {
+        return InterpolationToken.Replace(text, m =>
+        {
+            switch (m.Groups[1].Value)
+            {
+                case "page":        return ctx.PageNumber.ToString(CultureInfo.InvariantCulture);
+                case "total_pages": return ctx.TotalPages.ToString(CultureInfo.InvariantCulture);
+                default:            return m.Value;
+            }
+        });
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -216,8 +347,9 @@ public static class FormRenderer
     // Content Elements
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static string RenderText(TextElement el, string unit)
+    private static string RenderText(TextElement el, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x          = FormUnits.ToPixels(el.X, unit);
         var y          = FormUnits.ToPixels(el.Y, unit);
         var fontSize   = el.FontSize.HasValue ? FormUnits.ToPixels(el.FontSize.Value, "pt") : FormUnits.ToPixels(12, "pt");
@@ -226,87 +358,128 @@ public static class FormRenderer
         var fontFamily = el.FontFamily != null ? "font-family:" + el.FontFamily + ";" : "";
         var fontStyle  = el.FontStyle == "italic" ? "font-style:italic;" : "";
         var textAlign  = el.TextAlign != null ? "text-align:" + el.TextAlign + ";" : "";
-        return "<span class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";font-size:" + Px(fontSize) + ";font-weight:" + fontWeight + ";color:" + color + ";" + fontFamily + fontStyle + textAlign + "\">" + EscapeHtml(el.Content) + "</span>";
+        var content    = Interpolate(el.Content, ctx);
+        return "<span class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";font-size:" + Px(fontSize) + ";font-weight:" + fontWeight + ";color:" + color + ";" + fontFamily + fontStyle + textAlign + "\">" + EscapeHtml(content) + "</span>";
     }
 
-    private static string RenderImage(ImageElement el, string unit)
+    private static string RenderImage(ImageElement el, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x = FormUnits.ToPixels(el.X, unit);
         var y = FormUnits.ToPixels(el.Y, unit);
         var w = FormUnits.ToPixels(el.W, unit);
         var h = FormUnits.ToPixels(el.H, unit);
-        return "<img class=\"odin-form-element\" src=\"" + EscapeAttr(el.Src) + "\" alt=\"" + EscapeAttr(el.Alt) + "\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">";
+        var src = ImageSrcToDataUri(el.Src);
+        var alt = Interpolate(el.Alt, ctx);
+        var zIndex = el.Background == true ? "z-index:0;" : "";
+        return "<img class=\"odin-form-element\" src=\"" + EscapeAttr(src) + "\" alt=\"" + EscapeAttr(alt) + "\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";" + zIndex + "\">";
+    }
+
+    private static string RenderBarcode(BarcodeElement el, RenderContext ctx)
+    {
+        var unit = ctx.Unit;
+        var x = FormUnits.ToPixels(el.X, unit);
+        var y = FormUnits.ToPixels(el.Y, unit);
+        var w = FormUnits.ToPixels(el.W, unit);
+        var h = FormUnits.ToPixels(el.H, unit);
+        var alt = Interpolate(el.Alt, ctx);
+        var content = Interpolate(el.Content, ctx);
+        return
+            "<div class=\"odin-form-element odin-form-barcode\" role=\"img\" aria-label=\"" + EscapeAttr(alt) + "\" " +
+            "data-barcode-type=\"" + EscapeAttr(el.BarcodeType) + "\" data-content=\"" + EscapeAttr(content) + "\" " +
+            "style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\"></div>";
+    }
+
+    /// <summary>
+    /// Convert an ODIN binary literal (^png:base64) to a data URI for img.
+    /// Passes through values already in data-URI or URL form.
+    /// </summary>
+    private static string ImageSrcToDataUri(string src)
+    {
+        if (!src.StartsWith("^", StringComparison.Ordinal)) return src;
+        var rest = src.Substring(1);
+        var colon = rest.IndexOf(':');
+        if (colon < 0) return "data:image/png;base64," + rest;
+        var format = rest.Substring(0, colon);
+        var b64 = rest.Substring(colon + 1);
+        return "data:image/" + format + ";base64," + b64;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Field Elements
     // ─────────────────────────────────────────────────────────────────────────
 
-    private static string RenderTextField(TextFieldElement el, int pageIndex, string unit, OdinDocument? data)
+    private static string RenderTextField(TextFieldElement el, int pageIndex, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x            = FormUnits.ToPixels(el.X, unit);
         var y            = FormUnits.ToPixels(el.Y, unit);
         var w            = FormUnits.ToPixels(el.W, unit);
         var h            = FormUnits.ToPixels(el.H, unit);
         var (inputId, ariaLabel, ariaRequired) = FieldAriaAttrs(el, pageIndex);
-        var value        = LookupBoundValue(el, data);
+        var value        = el.Value ?? LookupBoundValue(el, ctx.Data);
         var valueAttr    = value != null ? " value=\"" + EscapeAttr(value) + "\"" : "";
         var requiredAttr = el.Required == true ? " required" : "";
         var readonlyAttr = el.Readonly == true ? " readonly" : "";
         var placeholder  = el.Placeholder != null ? " placeholder=\"" + EscapeAttr(el.Placeholder) + "\"" : "";
+        var inputType    = el.InputType ?? "text";
 
         return
             "<div class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">" +
-            FieldLabelHtml(el.Label, inputId) +
-            "<input type=\"text\" class=\"odin-form-input\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(ariaLabel) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + valueAttr + requiredAttr + readonlyAttr + placeholder + ">" +
+            FieldLabelHtml(Interpolate(el.Label, ctx), inputId) +
+            "<input type=\"" + EscapeAttr(inputType) + "\" class=\"odin-form-input\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(Interpolate(ariaLabel, ctx)) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + valueAttr + requiredAttr + readonlyAttr + placeholder + ">" +
             "</div>";
     }
 
-    private static string RenderCheckbox(CheckboxElement el, int pageIndex, string unit, OdinDocument? data)
+    private static string RenderCheckbox(CheckboxElement el, int pageIndex, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x            = FormUnits.ToPixels(el.X, unit);
         var y            = FormUnits.ToPixels(el.Y, unit);
         var w            = FormUnits.ToPixels(el.W, unit);
         var h            = FormUnits.ToPixels(el.H, unit);
         var (inputId, ariaLabel, ariaRequired) = FieldAriaAttrs(el, pageIndex);
-        var value        = LookupBoundValue(el, data);
-        var checkedAttr  = value == "true" ? " checked" : "";
+        var bound        = LookupBoundValue(el, ctx.Data);
+        var isChecked    = el.Checked ?? (bound == "true");
+        var checkedAttr  = isChecked ? " checked" : "";
 
         return
             "<div class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">" +
-            FieldLabelHtml(el.Label, inputId) +
-            "<input type=\"checkbox\" class=\"odin-form-checkbox\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(ariaLabel) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + checkedAttr + ">" +
+            FieldLabelHtml(Interpolate(el.Label, ctx), inputId) +
+            "<input type=\"checkbox\" class=\"odin-form-checkbox\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(Interpolate(ariaLabel, ctx)) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + checkedAttr + ">" +
             "</div>";
     }
 
-    private static string RenderRadio(RadioElement el, int pageIndex, string unit, OdinDocument? data)
+    private static string RenderRadio(RadioElement el, int pageIndex, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x            = FormUnits.ToPixels(el.X, unit);
         var y            = FormUnits.ToPixels(el.Y, unit);
         var w            = FormUnits.ToPixels(el.W, unit);
         var h            = FormUnits.ToPixels(el.H, unit);
         var (inputId, ariaLabel, ariaRequired) = FieldAriaAttrs(el, pageIndex);
-        var value        = LookupBoundValue(el, data);
+        var value        = LookupBoundValue(el, ctx.Data);
         var checkedAttr  = value == el.Value ? " checked" : "";
 
         var radioHtml =
-            "<input type=\"radio\" class=\"odin-form-radio\" id=\"" + inputId + "\" name=\"" + EscapeAttr(el.Group) + "\" value=\"" + EscapeAttr(el.Value) + "\" aria-label=\"" + EscapeAttr(ariaLabel) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + checkedAttr + ">" +
-            "<label for=\"" + inputId + "\">" + EscapeHtml(el.Label) + "</label>";
+            "<input type=\"radio\" class=\"odin-form-radio\" id=\"" + inputId + "\" name=\"" + EscapeAttr(el.Group) + "\" value=\"" + EscapeAttr(el.Value) + "\" aria-label=\"" + EscapeAttr(Interpolate(ariaLabel, ctx)) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + checkedAttr + ">" +
+            "<label for=\"" + inputId + "\">" + EscapeHtml(Interpolate(el.Label, ctx)) + "</label>";
 
         return
             "<div class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">" +
-            FieldGroupHtml(el.Group, el.Label, radioHtml) +
+            FieldGroupHtml(el.Group, Interpolate(el.Label, ctx), radioHtml) +
             "</div>";
     }
 
-    private static string RenderSelect(SelectElement el, int pageIndex, string unit, OdinDocument? data)
+    private static string RenderSelect(SelectElement el, int pageIndex, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x            = FormUnits.ToPixels(el.X, unit);
         var y            = FormUnits.ToPixels(el.Y, unit);
         var w            = FormUnits.ToPixels(el.W, unit);
         var h            = FormUnits.ToPixels(el.H, unit);
         var (inputId, ariaLabel, ariaRequired) = FieldAriaAttrs(el, pageIndex);
-        var value        = LookupBoundValue(el, data);
+        var value        = el.Selected ?? LookupBoundValue(el, ctx.Data);
 
         var optionParts = new List<string>();
         if (el.Placeholder != null)
@@ -319,65 +492,72 @@ public static class FormRenderer
 
         return
             "<div class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">" +
-            FieldLabelHtml(el.Label, inputId) +
-            "<select class=\"odin-form-select\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(ariaLabel) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + ">" +
+            FieldLabelHtml(Interpolate(el.Label, ctx), inputId) +
+            "<select class=\"odin-form-select\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(Interpolate(ariaLabel, ctx)) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + ">" +
             string.Concat(optionParts) +
             "</select>" +
             "</div>";
     }
 
-    private static string RenderMultiselect(MultiselectElement el, int pageIndex, string unit, OdinDocument? data)
+    private static string RenderMultiselect(MultiselectElement el, int pageIndex, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x            = FormUnits.ToPixels(el.X, unit);
         var y            = FormUnits.ToPixels(el.Y, unit);
         var w            = FormUnits.ToPixels(el.W, unit);
         var h            = FormUnits.ToPixels(el.H, unit);
         var (inputId, ariaLabel, ariaRequired) = FieldAriaAttrs(el, pageIndex);
-        var value        = LookupBoundValue(el, data);
 
-        var trimmedSelectedValues = new HashSet<string>(StringComparer.Ordinal);
-        if (value != null)
+        var selectedValues = new HashSet<string>(StringComparer.Ordinal);
+        if (el.Selected != null)
         {
-            foreach (var sv in value.Split(','))
-                trimmedSelectedValues.Add(sv.Trim());
+            foreach (var sv in el.Selected) selectedValues.Add(sv);
+        }
+        else
+        {
+            var value = LookupBoundValue(el, ctx.Data);
+            if (!string.IsNullOrEmpty(value))
+                foreach (var sv in value!.Split(',')) selectedValues.Add(sv.Trim());
         }
 
         var optionParts = new List<string>();
         foreach (var opt in el.Options)
         {
-            var selected = trimmedSelectedValues.Contains(opt) ? " selected" : "";
+            var selected = selectedValues.Contains(opt) ? " selected" : "";
             optionParts.Add("<option value=\"" + EscapeAttr(opt) + "\"" + selected + ">" + EscapeHtml(opt) + "</option>");
         }
 
         return
             "<div class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">" +
-            FieldLabelHtml(el.Label, inputId) +
-            "<select multiple class=\"odin-form-select\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(ariaLabel) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + ">" +
+            FieldLabelHtml(Interpolate(el.Label, ctx), inputId) +
+            "<select multiple class=\"odin-form-select\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(Interpolate(ariaLabel, ctx)) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + ">" +
             string.Concat(optionParts) +
             "</select>" +
             "</div>";
     }
 
-    private static string RenderDate(DateElement el, int pageIndex, string unit, OdinDocument? data)
+    private static string RenderDate(DateElement el, int pageIndex, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x            = FormUnits.ToPixels(el.X, unit);
         var y            = FormUnits.ToPixels(el.Y, unit);
         var w            = FormUnits.ToPixels(el.W, unit);
         var h            = FormUnits.ToPixels(el.H, unit);
         var (inputId, ariaLabel, ariaRequired) = FieldAriaAttrs(el, pageIndex);
-        var value        = LookupBoundValue(el, data);
+        var value        = el.Value ?? LookupBoundValue(el, ctx.Data);
         var valueAttr    = value != null ? " value=\"" + EscapeAttr(value) + "\"" : "";
         var requiredAttr = el.Required == true ? " required" : "";
 
         return
             "<div class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">" +
-            FieldLabelHtml(el.Label, inputId) +
-            "<input type=\"date\" class=\"odin-form-input\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(ariaLabel) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + valueAttr + requiredAttr + ">" +
+            FieldLabelHtml(Interpolate(el.Label, ctx), inputId) +
+            "<input type=\"date\" class=\"odin-form-input\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(Interpolate(ariaLabel, ctx)) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + valueAttr + requiredAttr + ">" +
             "</div>";
     }
 
-    private static string RenderSignature(SignatureElement el, int pageIndex, string unit)
+    private static string RenderSignature(SignatureElement el, int pageIndex, RenderContext ctx)
     {
+        var unit = ctx.Unit;
         var x            = FormUnits.ToPixels(el.X, unit);
         var y            = FormUnits.ToPixels(el.Y, unit);
         var w            = FormUnits.ToPixels(el.W, unit);
@@ -386,9 +566,168 @@ public static class FormRenderer
 
         return
             "<div class=\"odin-form-element\" style=\"position:absolute;left:" + Px(x) + ";top:" + Px(y) + ";width:" + Px(w) + ";height:" + Px(h) + ";\">" +
-            FieldLabelHtml(el.Label, inputId) +
-            "<div class=\"odin-form-signature\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(ariaLabel) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + " role=\"img\" tabindex=\"0\" style=\"width:100%;height:100%;\"></div>" +
+            FieldLabelHtml(Interpolate(el.Label, ctx), inputId) +
+            "<div class=\"odin-form-signature\" id=\"" + inputId + "\" aria-label=\"" + EscapeAttr(Interpolate(ariaLabel, ctx)) + "\"" + (ariaRequired ? " aria-required=\"true\"" : "") + " role=\"img\" tabindex=\"0\" style=\"width:100%;height:100%;\"></div>" +
             "</div>";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Region Rendering
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Render a region: repeat its children for each bound array item, positioning
+    /// each repetition by y-offset/x-offset relative to the region origin. Without
+    /// bound data, the region renders a single empty instance.
+    /// </summary>
+    private static string RenderRegion(RegionElement el, RenderContext ctx, PlannedPage page)
+    {
+        var unit = ctx.Unit;
+        var regionX = FormUnits.ToPixels(el.X, unit);
+        var regionY = FormUnits.ToPixels(el.Y, unit);
+        var regionW = FormUnits.ToPixels(el.W, unit);
+        var regionH = FormUnits.ToPixels(el.H, unit);
+
+        ItemSlice? slice = null;
+        if (page.ItemSlices != null && page.ItemSlices.TryGetValue(el.Name, out var s))
+            slice = s;
+
+        var bind = el.Bind ?? slice?.Bind;
+        var total = bind != null ? BoundArrayLength(bind, ctx.Data) : 0;
+        int start = 0;
+        int count;
+        if (slice.HasValue)
+        {
+            start = slice.Value.Start;
+            count = slice.Value.Count;
+        }
+        else if (total > 0)
+        {
+            count = el.Max.HasValue ? Math.Min(el.Max.Value, total) : total;
+        }
+        else
+        {
+            count = 1; // empty layout preview
+        }
+
+        var parts = new List<string>();
+        parts.Add(
+            "<div class=\"odin-form-element odin-form-region\" data-region=\"" + EscapeAttr(el.Name) + "\" " +
+            "style=\"position:absolute;left:" + Px(regionX) + ";top:" + Px(regionY) + ";width:" + Px(regionW) + ";height:" + Px(regionH) + ";\">");
+
+        for (var i = 0; i < count; i++)
+        {
+            var itemIndex = start + i;
+            var itemBind = bind != null ? $"{bind}[{itemIndex}]" : null;
+            foreach (var child in el.Children)
+                parts.Add(RenderRegionChild(child, i, itemBind, ctx));
+        }
+
+        parts.Add("</div>");
+        return string.Concat(parts);
+    }
+
+    /// <summary>
+    /// Render one region child for repetition index i. Coordinates are rebased by
+    /// the per-item y-offset/x-offset; field children get a unique name and have
+    /// their @.field relative binding resolved against the current item.
+    /// </summary>
+    private static string RenderRegionChild(FormElement child, int i, string? itemBind, RenderContext ctx)
+    {
+        var yOffset = child.YOffset ?? 0;
+        var xOffset = child.XOffset ?? 0;
+
+        if (child is TextElement text)
+        {
+            var dx = text.X + xOffset * i;
+            var dy = text.Y + yOffset * i;
+            var rebasedText = new TextElement(text.Name, text.Id, text.Content, dx, dy,
+                text.Rotate, text.FontFamily, text.FontSize, text.FontWeight, text.FontStyle, text.TextAlign, text.Color);
+            return RenderText(rebasedText, ctx);
+        }
+
+        if (child is BaseFieldElement field)
+        {
+            var dx = field.X + xOffset * i;
+            var dy = field.Y + yOffset * i;
+            var resolvedBind = ResolveRelativeBind(field.Bind, itemBind) ?? field.Bind;
+            var rebased = RebaseField(field, dx, dy, $"{field.Name}_{i}", resolvedBind);
+            // Region children render on a synthetic page index so generated IDs are unique.
+            var childPageIndex = -1 - i;
+            return RenderElement(rebased, childPageIndex, ctx, new PlannedPage());
+        }
+
+        return "";
+    }
+
+    /// <summary>Rebuild a field with rebased coordinates, a unique name, and a resolved bind.</summary>
+    private static FormElement RebaseField(BaseFieldElement f, double x, double y, string name, string bind)
+    {
+        switch (f)
+        {
+            case TextFieldElement t:
+                return new TextFieldElement(name, t.Id, t.Label, x, y, t.W, t.H, bind,
+                    t.AriaLabel, t.Tabindex, t.Readonly, t.Required, t.Pattern, t.MinLength, t.MaxLength,
+                    t.Min, t.Max, t.Value, t.InputType, t.Mask, t.Placeholder, t.Multiline, t.MaxLines);
+            case CheckboxElement c:
+                return new CheckboxElement(name, c.Id, c.Label, x, y, c.W, c.H, bind,
+                    c.AriaLabel, c.Tabindex, c.Readonly, c.Required, c.Pattern, c.MinLength, c.MaxLength,
+                    c.Min, c.Max, c.Checked);
+            case RadioElement r:
+                return new RadioElement(name, r.Id, r.Label, x, y, r.W, r.H, bind, r.Group, r.Value,
+                    r.AriaLabel, r.Tabindex, r.Readonly, r.Required, r.Pattern, r.MinLength, r.MaxLength, r.Min, r.Max);
+            case SelectElement s:
+                return new SelectElement(name, s.Id, s.Label, x, y, s.W, s.H, bind, s.Options,
+                    s.AriaLabel, s.Tabindex, s.Readonly, s.Required, s.Pattern, s.MinLength, s.MaxLength,
+                    s.Min, s.Max, s.Selected, s.Placeholder);
+            case MultiselectElement m:
+                return new MultiselectElement(name, m.Id, m.Label, x, y, m.W, m.H, bind, m.Options,
+                    m.AriaLabel, m.Tabindex, m.Readonly, m.Required, m.Pattern, m.MinLength, m.MaxLength,
+                    m.Min, m.Max, m.Selected, m.MinSelect, m.MaxSelect);
+            case DateElement d:
+                return new DateElement(name, d.Id, d.Label, x, y, d.W, d.H, bind,
+                    d.AriaLabel, d.Tabindex, d.Readonly, d.Required, d.Pattern, d.MinLength, d.MaxLength,
+                    d.Min, d.Max, d.Value);
+            case SignatureElement sig:
+                return new SignatureElement(name, sig.Id, sig.Label, x, y, sig.W, sig.H, bind, sig.Value, sig.DateField,
+                    sig.AriaLabel, sig.Tabindex, sig.Readonly, sig.Required, sig.Pattern, sig.MinLength, sig.MaxLength, sig.Min, sig.Max);
+            default:
+                return f;
+        }
+    }
+
+    /// <summary>Resolve a region child's @.field relative bind against the current item path.</summary>
+    private static string? ResolveRelativeBind(string bind, string? itemBind)
+    {
+        if (string.IsNullOrEmpty(bind)) return null;
+        if (bind.StartsWith("@.", StringComparison.Ordinal))
+        {
+            if (itemBind == null) return null;
+            return $"{itemBind}.{bind.Substring(2)}";
+        }
+        return bind;
+    }
+
+    /// <summary>
+    /// Number of items in a bound array path. Counts both scalar elements (path[n])
+    /// and object elements (path[n].field) in a single path scan.
+    /// </summary>
+    private static int BoundArrayLength(string bind, OdinDocument? data)
+    {
+        if (data == null) return 0;
+        var path = bind.StartsWith("@", StringComparison.Ordinal) ? bind.Substring(1) : bind;
+        var re = new Regex("^" + Regex.Escape(path) + @"\[(\d+)\](?:\.|$)");
+        var max = -1;
+        foreach (var p in data.Paths())
+        {
+            var m = re.Match(p);
+            if (m.Success)
+            {
+                var idx = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
+                if (idx > max) max = idx;
+            }
+        }
+        return max + 1;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -409,18 +748,14 @@ public static class FormRenderer
             return null;
 
         var val = data.Get(path);
-        if (val == null) return null;
-
-        var str = val.AsString();
-        if (str != null) return str;
-
-        var dbl = val.AsDouble();
-        if (dbl.HasValue) return dbl.Value.ToString(CultureInfo.InvariantCulture);
-
-        var bl = val.AsBool();
-        if (bl.HasValue) return bl.Value ? "true" : "false";
-
-        return null;
+        return val switch
+        {
+            OdinString s  => s.Value,
+            OdinNumber n  => n.Value.ToString(CultureInfo.InvariantCulture),
+            OdinInteger i => i.Value.ToString(CultureInfo.InvariantCulture),
+            OdinBoolean b => b.Value ? "true" : "false",
+            _ => null,
+        };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -443,7 +778,7 @@ public static class FormRenderer
 
     private static string FieldGroupHtml(string groupName, string legend, string content)
     {
-        _ = groupName; // accepted for API symmetry
+        _ = groupName;
         return
             "<fieldset class=\"odin-form-fieldset\">" +
             "<legend class=\"odin-form-legend\">" + legend + "</legend>" +
@@ -462,10 +797,8 @@ public static class FormRenderer
     {
         var fields = new List<FormElement>();
         foreach (var el in elements)
-        {
             if (el is BaseFieldElement)
                 fields.Add(el);
-        }
         fields.Sort((a, b) =>
         {
             var fa = (BaseFieldElement)a;
@@ -532,6 +865,7 @@ public static class FormRenderer
         return str
             .Replace("&", "&amp;")
             .Replace("\"", "&quot;")
+            .Replace("'", "&#39;")
             .Replace("<", "&lt;")
             .Replace(">", "&gt;");
     }

@@ -535,6 +535,11 @@ namespace Odin.Core.Parsing
                     // Allow '-' inside brackets for negative index detection
                     state.Advance();
                 }
+                else if (c == '-' && !inBracket && IsIdentifierContinuationAfterHyphen(state))
+                {
+                    // Hyphenated key segment (e.g. font-size, stroke-width).
+                    state.Advance();
+                }
                 else
                 {
                     break;
@@ -559,6 +564,15 @@ namespace Odin.Core.Parsing
             }
 
             return state.MakeToken(TokenType.Path, start, startLine, startCol, identValue);
+        }
+
+        /// <summary>True when the char after the current '-' continues an identifier segment.</summary>
+        private static bool IsIdentifierContinuationAfterHyphen(TokenizerState state)
+        {
+            if (!state.HasCharAt(1)) return false;
+            char n = state.PeekAt(1);
+            return (n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') ||
+                   (n >= '0' && n <= '9') || n == '_';
         }
 
         private static Token ScanBracketPath(TokenizerState state)

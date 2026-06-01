@@ -39,6 +39,9 @@ public sealed class OdinForm
     /// <summary>Ordered list of form pages (page[0], page[1], ...).</summary>
     public IReadOnlyList<FormPage> Pages { get; }
 
+    /// <summary>Page templates ({@tpl_*}) keyed by template name. Optional.</summary>
+    public IReadOnlyDictionary<string, PageTemplate>? Templates { get; }
+
     /// <summary>Creates an OdinForm with all components.</summary>
     public OdinForm(
         FormMetadata metadata,
@@ -46,7 +49,8 @@ public sealed class OdinForm
         PageDefaults? pageDefaults = null,
         ScreenSettings? screen = null,
         OdincodeSettings? odincode = null,
-        IReadOnlyDictionary<string, string>? i18n = null)
+        IReadOnlyDictionary<string, string>? i18n = null,
+        IReadOnlyDictionary<string, PageTemplate>? templates = null)
     {
         Metadata = metadata;
         Pages = pages;
@@ -54,6 +58,7 @@ public sealed class OdinForm
         Screen = screen;
         Odincode = odincode;
         I18n = i18n;
+        Templates = templates;
     }
 }
 
@@ -101,16 +106,41 @@ public sealed class PageDefaults
     /// <summary>Measurement unit for all coordinates and dimensions on the page.</summary>
     public string Unit { get; }
 
-    /// <summary>Page margin in the declared unit. Optional.</summary>
-    public double? Margin { get; }
+    /// <summary>Per-side page margins in the declared unit. Optional.</summary>
+    public PageMargins? Margin { get; }
 
     /// <summary>Creates page defaults.</summary>
-    public PageDefaults(double width, double height, string unit, double? margin = null)
+    public PageDefaults(double width, double height, string unit, PageMargins? margin = null)
     {
         Width = width;
         Height = height;
         Unit = unit;
         Margin = margin;
+    }
+}
+
+/// <summary>
+/// Per-side page margins. Corresponds to margin.top, margin.right,
+/// margin.bottom, margin.left under {$.page}.
+/// </summary>
+public sealed class PageMargins
+{
+    /// <summary>Top margin in the declared unit. Optional.</summary>
+    public double? Top { get; }
+
+    /// <summary>Right margin in the declared unit. Optional.</summary>
+    public double? Right { get; }
+
+    /// <summary>Bottom margin in the declared unit. Optional.</summary>
+    public double? Bottom { get; }
+
+    /// <summary>Left margin in the declared unit. Optional.</summary>
+    public double? Left { get; }
+
+    /// <summary>Creates per-side page margins.</summary>
+    public PageMargins(double? top = null, double? right = null, double? bottom = null, double? left = null)
+    {
+        Top = top; Right = right; Bottom = bottom; Left = left;
     }
 }
 
@@ -191,6 +221,12 @@ public abstract class FormElement
     /// When omitted the renderer may derive one from Name.
     /// </summary>
     public string? Id { get; }
+
+    /// <summary>Vertical spacing applied per repeated item when this element is a region child.</summary>
+    public double? YOffset { get; set; }
+
+    /// <summary>Horizontal spacing applied per repeated item when this element is a region child.</summary>
+    public double? XOffset { get; set; }
 
     /// <summary>Creates a base form element.</summary>
     protected FormElement(string name, string? id = null)
@@ -633,11 +669,15 @@ public sealed class ImageElement : FormElement
     /// <summary>Element height.</summary>
     public double H { get; }
 
+    /// <summary>When true, renders behind all other elements at the lowest z-index.</summary>
+    public bool? Background { get; }
+
     /// <summary>Creates an image element.</summary>
-    public ImageElement(string name, string? id, string src, string alt, double x, double y, double w, double h)
+    public ImageElement(string name, string? id, string src, string alt, double x, double y, double w, double h,
+        bool? background = null)
         : base(name, id)
     {
-        Src = src; Alt = alt; X = x; Y = y; W = w; H = h;
+        Src = src; Alt = alt; X = x; Y = y; W = w; H = h; Background = background;
     }
 }
 
@@ -754,6 +794,12 @@ public sealed class TextFieldElement : BaseFieldElement
     /// <inheritdoc/>
     public override string Type => "field.text";
 
+    /// <summary>Current inline text value. Optional.</summary>
+    public string? Value { get; }
+
+    /// <summary>Screen rendering hint controlling the HTML5 input type attribute.</summary>
+    public string? InputType { get; }
+
     /// <summary>Input mask pattern (e.g. "###-##-####"). Optional.</summary>
     public string? Mask { get; }
 
@@ -771,9 +817,11 @@ public sealed class TextFieldElement : BaseFieldElement
         string bind, string? ariaLabel = null, int? tabindex = null, bool? readOnly = null,
         bool? required = null, string? pattern = null, int? minLength = null, int? maxLength = null,
         string? min = null, string? max = null,
+        string? value = null, string? inputType = null,
         string? mask = null, string? placeholder = null, bool? multiline = null, int? maxLines = null)
         : base(name, id, label, x, y, w, h, bind, ariaLabel, tabindex, readOnly, required, pattern, minLength, maxLength, min, max)
     {
+        Value = value; InputType = inputType;
         Mask = mask; Placeholder = placeholder; Multiline = multiline; MaxLines = maxLines;
     }
 }
@@ -784,13 +832,16 @@ public sealed class CheckboxElement : BaseFieldElement
     /// <inheritdoc/>
     public override string Type => "field.checkbox";
 
+    /// <summary>Whether the checkbox is checked. Optional inline value.</summary>
+    public bool? Checked { get; }
+
     /// <summary>Creates a checkbox element.</summary>
     public CheckboxElement(string name, string? id, string label, double x, double y, double w, double h,
         string bind, string? ariaLabel = null, int? tabindex = null, bool? readOnly = null,
         bool? required = null, string? pattern = null, int? minLength = null, int? maxLength = null,
-        string? min = null, string? max = null)
+        string? min = null, string? max = null, bool? @checked = null)
         : base(name, id, label, x, y, w, h, bind, ariaLabel, tabindex, readOnly, required, pattern, minLength, maxLength, min, max)
-    { }
+    { Checked = @checked; }
 }
 
 /// <summary>Radio button field — part of a mutually exclusive group. (type = radio)</summary>
@@ -826,6 +877,9 @@ public sealed class SelectElement : BaseFieldElement
     /// <summary>Ordered list of valid option values. Required.</summary>
     public IReadOnlyList<string> Options { get; }
 
+    /// <summary>Currently selected option value. Optional inline value.</summary>
+    public string? Selected { get; }
+
     /// <summary>Default label shown when no option is selected. Optional.</summary>
     public string? Placeholder { get; }
 
@@ -834,10 +888,10 @@ public sealed class SelectElement : BaseFieldElement
         string bind, IReadOnlyList<string> options,
         string? ariaLabel = null, int? tabindex = null, bool? readOnly = null,
         bool? required = null, string? pattern = null, int? minLength = null, int? maxLength = null,
-        string? min = null, string? max = null, string? placeholder = null)
+        string? min = null, string? max = null, string? selected = null, string? placeholder = null)
         : base(name, id, label, x, y, w, h, bind, ariaLabel, tabindex, readOnly, required, pattern, minLength, maxLength, min, max)
     {
-        Options = options; Placeholder = placeholder;
+        Options = options; Selected = selected; Placeholder = placeholder;
     }
 }
 
@@ -850,6 +904,9 @@ public sealed class MultiselectElement : BaseFieldElement
     /// <summary>Ordered list of valid option values. Required.</summary>
     public IReadOnlyList<string> Options { get; }
 
+    /// <summary>Currently selected option values. Optional inline value.</summary>
+    public IReadOnlyList<string>? Selected { get; }
+
     /// <summary>Minimum number of selections required (integer >= 1). Optional.</summary>
     public int? MinSelect { get; }
 
@@ -861,10 +918,11 @@ public sealed class MultiselectElement : BaseFieldElement
         string bind, IReadOnlyList<string> options,
         string? ariaLabel = null, int? tabindex = null, bool? readOnly = null,
         bool? required = null, string? pattern = null, int? minLength = null, int? maxLength = null,
-        string? min = null, string? max = null, int? minSelect = null, int? maxSelect = null)
+        string? min = null, string? max = null,
+        IReadOnlyList<string>? selected = null, int? minSelect = null, int? maxSelect = null)
         : base(name, id, label, x, y, w, h, bind, ariaLabel, tabindex, readOnly, required, pattern, minLength, maxLength, min, max)
     {
-        Options = options; MinSelect = minSelect; MaxSelect = maxSelect;
+        Options = options; Selected = selected; MinSelect = minSelect; MaxSelect = maxSelect;
     }
 }
 
@@ -874,13 +932,16 @@ public sealed class DateElement : BaseFieldElement
     /// <inheritdoc/>
     public override string Type => "field.date";
 
+    /// <summary>Current date value as an ISO 8601 date string. Optional inline value.</summary>
+    public string? Value { get; }
+
     /// <summary>Creates a date element.</summary>
     public DateElement(string name, string? id, string label, double x, double y, double w, double h,
         string bind, string? ariaLabel = null, int? tabindex = null, bool? readOnly = null,
         bool? required = null, string? pattern = null, int? minLength = null, int? maxLength = null,
-        string? min = null, string? max = null)
+        string? min = null, string? max = null, string? value = null)
         : base(name, id, label, x, y, w, h, bind, ariaLabel, tabindex, readOnly, required, pattern, minLength, maxLength, min, max)
-    { }
+    { Value = value; }
 }
 
 /// <summary>Signature capture area. (type = signature)</summary>
@@ -889,18 +950,105 @@ public sealed class SignatureElement : BaseFieldElement
     /// <inheritdoc/>
     public override string Type => "field.signature";
 
+    /// <summary>Captured signature data as an ODIN binary literal. Optional inline value.</summary>
+    public string? Value { get; }
+
     /// <summary>ODIN reference to an associated date field. Optional.</summary>
     public string? DateField { get; }
 
     /// <summary>Creates a signature element.</summary>
     public SignatureElement(string name, string? id, string label, double x, double y, double w, double h,
-        string bind, string? dateField = null,
+        string bind, string? value = null, string? dateField = null,
         string? ariaLabel = null, int? tabindex = null, bool? readOnly = null,
         bool? required = null, string? pattern = null, int? minLength = null, int? maxLength = null,
         string? min = null, string? max = null)
         : base(name, id, label, x, y, w, h, bind, ariaLabel, tabindex, readOnly, required, pattern, minLength, maxLength, min, max)
     {
-        DateField = dateField;
+        Value = value; DateField = dateField;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Regions
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// A container grouping repeating content bound to an array. ({.region.*})
+///
+/// Child elements repeat for each item in the bound array; when items exceed
+/// Max, overflow pages are generated via Overflow.
+/// </summary>
+public sealed class RegionElement : FormElement
+{
+    /// <inheritdoc/>
+    public override string Type => "region";
+
+    /// <summary>X coordinate from the left edge of the page.</summary>
+    public double X { get; }
+
+    /// <summary>Y coordinate from the top edge of the page.</summary>
+    public double Y { get; }
+
+    /// <summary>Element width.</summary>
+    public double W { get; }
+
+    /// <summary>Element height.</summary>
+    public double H { get; }
+
+    /// <summary>ODIN path to the array data source (e.g. "@policy.vehicles"). Optional.</summary>
+    public string? Bind { get; }
+
+    /// <summary>Maximum items before overflow. Optional.</summary>
+    public int? Max { get; }
+
+    /// <summary>"clone" or a template reference (e.g. "@tpl_vehicles_continued"). Optional.</summary>
+    public string? Overflow { get; }
+
+    /// <summary>Child elements, repeated per bound item.</summary>
+    public IReadOnlyList<FormElement> Children { get; }
+
+    /// <summary>Creates a region element.</summary>
+    public RegionElement(string name, string? id, double x, double y, double w, double h,
+        IReadOnlyList<FormElement> children,
+        string? bind = null, int? max = null, string? overflow = null)
+        : base(name, id)
+    {
+        X = x; Y = y; W = w; H = h;
+        Bind = bind; Max = max; Overflow = overflow; Children = children;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Page Templates
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// A page template ({@tpl_*}) — a layout for dynamically generated overflow
+/// pages. Not rendered directly; instantiated when a region overflows.
+/// </summary>
+public sealed class PageTemplate
+{
+    /// <summary>Template name (e.g. "tpl_vehicles_continued").</summary>
+    public string Name { get; }
+
+    /// <summary>Always true — marks this as a template, not a concrete page.</summary>
+    public bool IsPageTemplate { get; }
+
+    /// <summary>Names the region this template continues (e.g. "region.vehicles"). Optional.</summary>
+    public string? Continues { get; }
+
+    /// <summary>Form identifier for continuation pages. Optional.</summary>
+    public string? FormId { get; }
+
+    /// <summary>Elements contained in the template, in document order.</summary>
+    public IReadOnlyList<FormElement> Elements { get; }
+
+    /// <summary>Creates a page template.</summary>
+    public PageTemplate(string name, bool isPageTemplate, IReadOnlyList<FormElement> elements,
+        string? continues = null, string? formId = null)
+    {
+        Name = name; IsPageTemplate = isPageTemplate; Elements = elements;
+        Continues = continues; FormId = formId;
     }
 }
 
