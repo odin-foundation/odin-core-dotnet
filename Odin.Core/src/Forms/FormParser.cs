@@ -41,12 +41,11 @@ public static class FormParser
         var metadata     = ExtractMetadata(doc);
         var pageDefaults = ExtractPageDefaults(doc);
         var screen       = ExtractScreen(doc);
-        var odincode     = ExtractOdincode(doc);
         var i18n         = ExtractI18n(doc);
         var pages        = ExtractPages(doc, i18n);
         var templates    = ExtractTemplates(templateBlocks, i18n);
 
-        return new OdinForm(metadata, pages, pageDefaults, screen, odincode, i18n, templates);
+        return new OdinForm(metadata, pages, pageDefaults, screen, i18n, templates);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -224,18 +223,6 @@ public static class FormParser
     {
         var scale = GetNumber(doc, $"{MetaPrefix}.screen.scale");
         return scale.HasValue ? new ScreenSettings(scale.Value) : null;
-    }
-
-    private static OdincodeSettings? ExtractOdincode(OdinDocument doc)
-    {
-        var enabled = GetBoolean(doc, $"{MetaPrefix}.odincode.enabled");
-        var zone    = GetString(doc, $"{MetaPrefix}.odincode.zone");
-
-        if (enabled == null && zone == null)
-            return null;
-
-        var resolvedZone = zone is "top-center" or "bottom-center" ? zone : "bottom-center";
-        return new OdincodeSettings(enabled ?? false, resolvedZone);
     }
 
     private static Dictionary<string, string>? ExtractI18n(OdinDocument doc)

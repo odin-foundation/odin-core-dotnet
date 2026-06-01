@@ -30,9 +30,6 @@ public sealed class OdinForm
     /// <summary>Screen rendering options ({$.screen}). Optional.</summary>
     public ScreenSettings? Screen { get; }
 
-    /// <summary>Self-digitizing barcode settings ({$.odincode}). Optional.</summary>
-    public OdincodeSettings? Odincode { get; }
-
     /// <summary>Multi-language label dictionary ({$.i18n}). Optional.</summary>
     public IReadOnlyDictionary<string, string>? I18n { get; }
 
@@ -48,7 +45,6 @@ public sealed class OdinForm
         IReadOnlyList<FormPage> pages,
         PageDefaults? pageDefaults = null,
         ScreenSettings? screen = null,
-        OdincodeSettings? odincode = null,
         IReadOnlyDictionary<string, string>? i18n = null,
         IReadOnlyDictionary<string, PageTemplate>? templates = null)
     {
@@ -56,7 +52,6 @@ public sealed class OdinForm
         Pages = pages;
         PageDefaults = pageDefaults;
         Screen = screen;
-        Odincode = odincode;
         I18n = i18n;
         Templates = templates;
     }
@@ -155,30 +150,6 @@ public sealed class ScreenSettings
 
     /// <summary>Creates screen settings.</summary>
     public ScreenSettings(double scale) { Scale = scale; }
-}
-
-/// <summary>
-/// Self-digitizing barcode settings for the Odincode feature.
-/// Corresponds to {$.odincode}.
-/// </summary>
-public sealed class OdincodeSettings
-{
-    /// <summary>Whether Odincode generation is enabled.</summary>
-    public bool Enabled { get; }
-
-    /// <summary>
-    /// Placement zone for the barcode.
-    /// "top-center": 0.25" from the top edge, horizontally centered.
-    /// "bottom-center": 0.25" from the bottom edge, horizontally centered.
-    /// </summary>
-    public string Zone { get; }
-
-    /// <summary>Creates odincode settings.</summary>
-    public OdincodeSettings(bool enabled, string zone)
-    {
-        Enabled = enabled;
-        Zone = zone;
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
