@@ -37,6 +37,8 @@ namespace Odin.Core.Validation
             public List<ValidationError> DefinitionErrors = new List<ValidationError>(); // V017
             public List<ValidationError> ReferenceErrors = new List<ValidationError>();   // V012/V013
             public OdinSchemaDefinition Expanded = null!;
+            // Composition-expanded field map, document-independent part (markers + explicit fields).
+            public Dictionary<string, SchemaField> ExpandedFields = null!;
         }
 
         private static readonly ConditionalWeakTable<OdinSchemaDefinition, CachedSchema> SchemaCache =
@@ -55,6 +57,7 @@ namespace Odin.Core.Validation
             entry.Expanded = ExpandTypeComposition(schema);
             // Reference checks run against the expanded schema, matching the validate path.
             ValidateSchemaReferences(entry.Expanded, typeRegistry, entry.ReferenceErrors);
+            entry.ExpandedFields = ExpandSchemaFields(entry.Expanded, typeRegistry);
 
             lock (SchemaCache)
             {
@@ -123,7 +126,10 @@ namespace Odin.Core.Validation
             schema = cachedSchema.Expanded;
 
             // 0b. Expand _composition fields and field-level typeRefs into concrete fields.
-            var expandedFields = ExpandFieldComposition(doc, schema, typeRegistry);
+            // The schema-only base map is cached; only document-present typeRef fields
+            // are layered on per call.
+            var expandedFields = AugmentWithPresentCompositions(
+                doc, schema, typeRegistry, cachedSchema.ExpandedFields);
 
             // 1. Validate fields defined in schema (skip array element templates)
             foreach (var kvp in expandedFields)
@@ -927,13 +933,12 @@ namespace Odin.Core.Validation
         }
 
         /// <summary>
-        /// Expand <c>_composition</c> marker fields and field-level <c>@TypeRef</c> fields into
-        /// concrete fields under the parent path. An intersection (<c>@a &amp; @b</c>) is stored as
-        /// an <c>&amp;</c>-joined name; every referenced type's fields are merged. A field typed
-        /// <c>@SomeType</c> enforces that type's fields when the sub-object is present or required.
+        /// Expand <c>_composition</c> marker fields into concrete fields under the parent path,
+        /// then layer explicit fields on top. An intersection (<c>@a &amp; @b</c>) is stored as an
+        /// <c>&amp;</c>-joined name; every referenced type's fields are merged. Document-independent,
+        /// so the result is cached per schema and reused across documents.
         /// </summary>
-        private static Dictionary<string, SchemaField> ExpandFieldComposition(
-            OdinDocument doc,
+        private static Dictionary<string, SchemaField> ExpandSchemaFields(
             OdinSchemaDefinition schema,
             TypeRegistry? registry)
         {
@@ -973,8 +978,21 @@ namespace Odin.Core.Validation
                 result[kvp.Key] = kvp.Value;
             }
 
-            // Field-level typeRefs: a field typed @SomeType enforces the type's fields under it.
-            foreach (var kvp in new List<KeyValuePair<string, SchemaField>>(result))
+            return result;
+        }
+
+        // Field-level typeRefs: a field typed @SomeType enforces the type's fields under it
+        // when the sub-object is present or the field is required. Document-dependent, so it
+        // runs per call atop the cached schema-only base map (which is never mutated).
+        private static Dictionary<string, SchemaField> AugmentWithPresentCompositions(
+            OdinDocument doc,
+            OdinSchemaDefinition schema,
+            TypeRegistry? registry,
+            Dictionary<string, SchemaField> baseFields)
+        {
+            Dictionary<string, SchemaField>? result = null;
+
+            foreach (var kvp in baseFields)
             {
                 string? refName = kvp.Value.FieldType switch
                 {
@@ -1002,13 +1020,15 @@ namespace Odin.Core.Validation
                     {
                         if (f.Name == "_composition") continue;
                         var full = kvp.Key + "." + f.Name;
+                        if (baseFields.ContainsKey(full)) continue;
+                        result ??= new Dictionary<string, SchemaField>(baseFields);
                         if (!result.ContainsKey(full))
                             result[full] = WithName(f, full);
                     }
                 }
             }
 
-            return result;
+            return result ?? baseFields;
         }
 
         private static SchemaField WithName(SchemaField f, string name) => new SchemaField
