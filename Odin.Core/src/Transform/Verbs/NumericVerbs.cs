@@ -493,19 +493,21 @@ internal static class NumericVerbs
             if (d.HasValue) decimals = (int)d.Value;
         }
 
+        // Default formatting uses grouping with up to three fraction digits and no
+        // padding, independent of the platform's culture data. The "N" format pads to
+        // the culture's default digit count, which varies between platforms.
         try
         {
             var culture = new CultureInfo(locale);
             if (decimals >= 0)
                 return DynValue.String(val.Value.ToString("N" + decimals, culture));
-            return DynValue.String(val.Value.ToString("N", culture));
+            return DynValue.String(val.Value.ToString("#,##0.###", culture));
         }
         catch (Exception)
         {
-            // Fallback to invariant culture
             if (decimals >= 0)
                 return DynValue.String(val.Value.ToString("N" + decimals, CultureInfo.InvariantCulture));
-            return DynValue.String(val.Value.ToString("N", CultureInfo.InvariantCulture));
+            return DynValue.String(val.Value.ToString("#,##0.###", CultureInfo.InvariantCulture));
         }
     }
 
