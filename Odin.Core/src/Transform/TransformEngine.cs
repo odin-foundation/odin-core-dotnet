@@ -736,7 +736,9 @@ namespace Odin.Core.Transform
                 Accumulators = accumulators,
                 Tables = tables,
                 LoopVars = new Dictionary<string, DynValue>(),
-                Verbs = new Dictionary<string, Func<DynValue[], VerbContext, DynValue>>(VerbRegistry),
+                // Built-in verbs never change after startup and ctx.Verbs is read-only
+                // during execution; share the static registry instead of copying it per call.
+                Verbs = VerbRegistry,
                 Warnings = new List<TransformWarning>(),
                 Errors = new List<TransformError>(),
                 EnforceConfidential = transform.EnforceConfidential,
