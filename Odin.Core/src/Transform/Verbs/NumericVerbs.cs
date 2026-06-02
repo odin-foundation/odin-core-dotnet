@@ -73,7 +73,7 @@ internal static class NumericVerbs
     }
 
     /// <summary>
-    /// DJB2 hash with seed starting at 0, matching TypeScript/Rust behavior.
+    /// DJB2 hash with seed starting at 0.
     /// </summary>
     internal static uint StringToSeed(string s)
     {
@@ -276,7 +276,7 @@ internal static class NumericVerbs
             }
         }
 
-        // 1 numeric arg: random integer in [0, N] inclusive (matches Java/Rust)
+        // 1 numeric arg: random integer in [0, N] inclusive
         if (args.Length == 1)
         {
             var maxVal = ToDouble(args[0]);
@@ -383,7 +383,7 @@ internal static class NumericVerbs
             if (d.HasValue) decimals = (int)d.Value;
         }
         double pct = val.Value * 100.0;
-        // Use AwayFromZero rounding to match JavaScript's toFixed behavior
+        // Half-away-from-zero rounding
         double rounded = Math.Round(pct, Math.Max(0, decimals), MidpointRounding.AwayFromZero);
         return DynValue.String(rounded.ToString("F" + decimals, CultureInfo.InvariantCulture) + "%");
     }
@@ -426,7 +426,7 @@ internal static class NumericVerbs
         return parsed.HasValue ? DynValue.Integer(parsed.Value) : DynValue.Null();
     }
 
-    // Parse a leading integer in the given radix (JS parseInt prefix semantics).
+    // Parse a leading integer prefix in the given radix, ignoring trailing characters.
     private static long? ParseIntRadix(string s, int radix)
     {
         if (s.Length == 0) return null;

@@ -62,7 +62,7 @@ internal static class VerbHelpers
     }
 
     /// <summary>
-    /// Coerces a DynValue to its string representation. Mirrors the Rust coerce_str function.
+    /// Coerces a DynValue to its string representation.
     /// </summary>
     /// <param name="val">The value to coerce.</param>
     /// <returns>The string representation of the value.</returns>
@@ -150,7 +150,7 @@ internal static class VerbHelpers
 
     /// <summary>
     /// Deep equality comparison of two DynValues with cross-type numeric and
-    /// string-number coercion, matching the Rust dyn_values_equal behavior.
+    /// string-number coercion.
     /// </summary>
     /// <param name="a">First value.</param>
     /// <param name="b">Second value.</param>

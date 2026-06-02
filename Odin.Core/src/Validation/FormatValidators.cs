@@ -127,7 +127,7 @@ namespace Odin.Core.Validation
             return FormatValidationResult.Error("Invalid URL format");
         }
 
-        // Matches TS: /^[a-zA-Z][a-zA-Z0-9+.-]*:[^\s]*$/
+        // URI: scheme (letter then letters/digits/+.-) followed by ':' and any non-whitespace
         private static readonly Regex UriRegex =
             new Regex(@"^[a-zA-Z][a-zA-Z0-9+.\-]*:[^\s]*$", RegexOptions.None, RegexTimeout);
 
@@ -138,7 +138,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid URI format");
         }
 
-        // Matches TS: /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/
+        // Hostname: dot-separated labels of alphanumerics/hyphens, each up to 63 chars
         private static readonly Regex HostnameRegex =
             new Regex(@"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$",
                 RegexOptions.None, RegexTimeout);
@@ -150,7 +150,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid hostname format");
         }
 
-        // Matches TS: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+        // ISO 8601 datetime: YYYY-MM-DDThh:mm:ss prefix
         private static readonly Regex DatetimeRegex =
             new Regex(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", RegexOptions.None, RegexTimeout);
 
@@ -161,7 +161,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid datetime format");
         }
 
-        // Matches TS: /^[A-Z]{2}\d{2}[A-Z0-9]{4,30}$/i
+        // IBAN: 2 letters, 2 check digits, then 4-30 alphanumerics
         private static readonly Regex IbanRegex =
             new Regex(@"^[A-Za-z]{2}\d{2}[A-Za-z0-9]{4,30}$", RegexOptions.None, RegexTimeout);
 
@@ -172,7 +172,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid IBAN format");
         }
 
-        // Matches TS: /^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/i
+        // BIC: 4-letter bank, 2-letter country, 2 alphanumeric location, optional 3-char branch
         private static readonly Regex BicRegex =
             new Regex(@"^[A-Za-z]{4}[A-Za-z]{2}[A-Za-z0-9]{2}([A-Za-z0-9]{3})?$", RegexOptions.None, RegexTimeout);
 
@@ -183,7 +183,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid BIC format");
         }
 
-        // Matches TS: /^\d{9}$/
+        // ABA routing number: 9 digits
         private static FormatValidationResult ValidateRouting(string value)
         {
             return IsAllDigits(value, 9)
@@ -191,7 +191,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid routing number format");
         }
 
-        // Matches TS: /^[A-Z0-9]{9}$/i
+        // CUSIP: 9 alphanumerics
         private static readonly Regex CusipRegex =
             new Regex(@"^[A-Za-z0-9]{9}$", RegexOptions.None, RegexTimeout);
 
@@ -202,7 +202,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid CUSIP format");
         }
 
-        // Matches TS: /^[A-Z]{2}[A-Z0-9]{9}\d$/i
+        // ISIN: 2-letter country, 9 alphanumerics, 1 check digit
         private static readonly Regex IsinRegex =
             new Regex(@"^[A-Za-z]{2}[A-Za-z0-9]{9}\d$", RegexOptions.None, RegexTimeout);
 
@@ -213,7 +213,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid ISIN format");
         }
 
-        // Matches TS: /^[A-Z0-9]{20}$/i
+        // LEI: 20 alphanumerics
         private static readonly Regex LeiRegex =
             new Regex(@"^[A-Za-z0-9]{20}$", RegexOptions.None, RegexTimeout);
 
@@ -224,7 +224,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid LEI format");
         }
 
-        // Matches TS: /^\d{10}$/
+        // NPI: 10 digits
         private static FormatValidationResult ValidateNpi(string value)
         {
             return IsAllDigits(value, 10)
@@ -232,7 +232,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid NPI format");
         }
 
-        // Matches TS: /^[A-Z]{2}\d{7}$/i
+        // DEA: 2 letters followed by 7 digits
         private static readonly Regex DeaRegex =
             new Regex(@"^[A-Za-z]{2}\d{7}$", RegexOptions.None, RegexTimeout);
 
@@ -243,7 +243,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid DEA format");
         }
 
-        // Matches TS: /^\d{15}$/
+        // IMEI: 15 digits
         private static FormatValidationResult ValidateImei(string value)
         {
             return IsAllDigits(value, 15)
@@ -251,7 +251,7 @@ namespace Odin.Core.Validation
                 : FormatValidationResult.Error("Invalid IMEI format");
         }
 
-        // Matches TS: /^\d{19,20}$/
+        // ICCID: 19 or 20 digits
         private static FormatValidationResult ValidateIccid(string value)
         {
             if ((value.Length == 19 || value.Length == 20) && IsAllDigits(value))

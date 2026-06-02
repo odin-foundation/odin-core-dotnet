@@ -186,7 +186,7 @@ internal static class DateTimeVerbs
         }
         if (dt == null) return DynValue.Null();
 
-        // Returns string type (matching TypeScript behavior)
+        // Returns string type
         return DynValue.String(FormatAsDate(dt.Value));
     }
 

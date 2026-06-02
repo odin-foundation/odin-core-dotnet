@@ -1,7 +1,6 @@
 // ODIN Forms 1.0 — Unit Conversion
 //
 // Converts between page units (inch, cm, mm, pt) and pixels at 96 DPI.
-// Matches the TypeScript implementation exactly.
 
 using System;
 using System.Collections.Generic;
@@ -10,7 +9,7 @@ namespace Odin.Core.Forms;
 
 /// <summary>
 /// Unit conversion utilities for ODIN Forms.
-/// All conversions use 96 DPI, matching the TypeScript SDK.
+/// All conversions use 96 DPI.
 /// </summary>
 public static class FormUnits
 {

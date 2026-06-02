@@ -776,7 +776,7 @@ namespace Odin.Core.Transform
                     {
                         if (n == Math.Floor(n) && Math.Abs(n) < 1e15)
                             return "#" + ((long)n).ToString(CultureInfo.InvariantCulture);
-                        // Use lowercase 'e' for scientific notation to match TypeScript/Rust
+                        // Use lowercase 'e' for scientific notation
                         string s = n.ToString("G", CultureInfo.InvariantCulture);
                         return "#" + s.Replace("E+", "e+").Replace("E-", "e-");
                     }

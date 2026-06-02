@@ -47,9 +47,8 @@ public enum DynValueType
 }
 
 /// <summary>
-/// A dynamic value used in transform I/O. This is a tagged union (type enum + typed accessors)
-/// that mirrors the Rust DynValue enum. All format conversions route through this type
-/// as part of the ODIN Canonical Data Model.
+/// A dynamic value used in transform I/O. This is a tagged union (type enum + typed accessors).
+/// All format conversions route through this type as part of the ODIN Canonical Data Model.
 /// </summary>
 public sealed class DynValue : IEquatable<DynValue>
 {

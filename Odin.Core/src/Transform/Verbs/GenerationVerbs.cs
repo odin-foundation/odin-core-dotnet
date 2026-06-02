@@ -61,7 +61,7 @@ internal static class GenerationVerbs
     /// <summary>
     /// Generates a UUID v4 string (lowercase, with hyphens).
     /// If a seed string argument is provided, produces a deterministic UUID v5
-    /// using dual DJB2 hashes to match TypeScript behavior.
+    /// using dual DJB2 hashes.
     /// </summary>
     private static DynValue Uuid(DynValue[] args, VerbContext ctx)
     {
@@ -88,7 +88,7 @@ internal static class GenerationVerbs
             hash2 = unchecked(((hash2 << 5) + hash2) ^ (int)c);
         }
 
-        // Generate 16 bytes using signed right shift to match JavaScript's >> behavior
+        // Generate 16 bytes using arithmetic (signed) right shift
         var bytes = new byte[16];
         for (int i = 0; i < 8; i++)
         {

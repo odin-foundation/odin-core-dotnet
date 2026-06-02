@@ -171,7 +171,6 @@ public static class Differ
 
     /// <summary>
     /// Swap-remove: replace element at index with the last element, then remove the last.
-    /// This matches Rust's Vec::swap_remove behavior.
     /// </summary>
     private static void SwapRemove<T>(List<T> list, int index)
     {
