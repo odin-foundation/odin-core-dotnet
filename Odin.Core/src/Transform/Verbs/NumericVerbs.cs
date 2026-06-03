@@ -625,7 +625,7 @@ internal static class NumericVerbs
         = new Dictionary<string, Dictionary<string, double>>
     {
         ["mass"] = new Dictionary<string, double>
-            { ["kg"] = 1, ["g"] = 0.001, ["mg"] = 0.000001, ["lb"] = 0.453592, ["oz"] = 0.0283495, ["ton"] = 907.185, ["tonne"] = 1000 },
+            { ["kg"] = 1, ["g"] = 0.001, ["mg"] = 0.000001, ["lb"] = 0.45359237, ["oz"] = 0.0283495, ["ton"] = 907.185, ["tonne"] = 1000 },
         ["length"] = new Dictionary<string, double>
             { ["m"] = 1, ["km"] = 1000, ["cm"] = 0.01, ["mm"] = 0.001, ["mi"] = 1609.344, ["ft"] = 0.3048, ["in"] = 0.0254, ["yd"] = 0.9144 },
         ["volume"] = new Dictionary<string, double>
