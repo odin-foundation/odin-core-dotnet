@@ -904,6 +904,12 @@ namespace Odin.Core.Transform
                 case "uuid": case "sequence": case "resetSequence":
                 case "keys": case "values": case "entries":
                 case "toRadians": case "toDegrees":
+                case "base64urlEncode": case "base64urlDecode":
+                case "parseUrl": case "buildUrl": case "parseQuery": case "buildQuery":
+                case "stableStringify": case "canonicalHash":
+                case "factorial":
+                case "invert": case "compactObject": case "fromEntries":
+                case "escapeHtml": case "unescapeHtml": case "escapeXml": case "stripTags":
                     return 1;
 
                 // Arity 2
@@ -930,6 +936,13 @@ namespace Odin.Core.Transform
                 case "nanoid":
                 case "has": case "merge": case "jsonPath":
                 case "assert":
+                case "intersection": case "union": case "difference": case "symmetricDifference":
+                case "countBy": case "keyBy": case "explode": case "window":
+                case "gcd": case "lcm":
+                case "defaults": case "renameKeys":
+                case "template":
+                case "xirr":
+                case "expr":
                     return 2;
 
                 // Arity 3
@@ -943,16 +956,20 @@ namespace Odin.Core.Transform
                 case "slice": case "range": case "shift": case "rank": case "lag": case "lead":
                 case "sample": case "fillMissing":
                 case "get":
+                case "hmac":
+                case "xnpv":
                     return 3;
 
                 // Arity 4
                 case "rate": case "nper":
                 case "filter": case "every": case "some": case "find": case "findIndex": case "partition":
                 case "bearing": case "midpoint":
+                case "countIf":
                     return 4;
 
                 // Arity 5
                 case "distance": case "interpolate":
+                case "sumIf": case "avgIf":
                     return 5;
 
                 // Arity 6
@@ -1055,8 +1072,31 @@ namespace Odin.Core.Transform
             var argsStr = verbEnd < raw.Length ? raw.Substring(verbEnd) : "";
             var (args, argsConsumed) = ParseExpressionArgs(argsStr, arity);
 
+            // %expr is a parse-time macro: compile the formula string into a verb tree.
+            if (verb == "expr" && !isCustom)
+            {
+                var compiled = CompileExprMacro(args);
+                return (FieldExpression.Transform(compiled), verbEnd + argsConsumed);
+            }
+
             var verbCall = new VerbCall { Verb = verb, IsCustom = isCustom, Args = args };
             return (FieldExpression.Transform(verbCall), verbEnd + argsConsumed);
+        }
+
+        // Compile a %expr "formula" [@bindings] macro into a nested verb call.
+        private static VerbCall CompileExprMacro(List<VerbArg> args)
+        {
+            if (args.Count == 0 || !(args[0] is LiteralArg lit) || !(lit.Value is OdinString formula))
+                throw new ExprSyntaxException("expected a quoted formula string");
+            string? bindingPath = null;
+            if (args.Count >= 2)
+            {
+                if (args[1] is ReferenceArg refArg)
+                    bindingPath = refArg.Path;
+                else
+                    throw new ExprSyntaxException("the bindings argument must be a reference such as @.vars");
+            }
+            return ExprMacro.Compile(formula.Value, bindingPath);
         }
 
         private static (VerbArg Arg, int Consumed) ParseVerbArgExpression(string raw)
@@ -1185,6 +1225,18 @@ namespace Odin.Core.Transform
                 {
                     args.Add(VerbArg.Lit(new OdinNull()));
                     pos += 1;
+                }
+                else if (pos + 5 <= argsStr.Length && argsStr.Substring(pos, 5) == "?true"
+                         && (pos + 5 >= argsStr.Length || char.IsWhiteSpace(argsStr[pos + 5])))
+                {
+                    args.Add(VerbArg.Lit(new OdinBoolean(true)));
+                    pos += 5;
+                }
+                else if (pos + 6 <= argsStr.Length && argsStr.Substring(pos, 6) == "?false"
+                         && (pos + 6 >= argsStr.Length || char.IsWhiteSpace(argsStr[pos + 6])))
+                {
+                    args.Add(VerbArg.Lit(new OdinBoolean(false)));
+                    pos += 6;
                 }
                 else if (pos + 4 <= argsStr.Length && argsStr.Substring(pos, 4) == "true"
                          && (pos + 4 >= argsStr.Length || char.IsWhiteSpace(argsStr[pos + 4])))

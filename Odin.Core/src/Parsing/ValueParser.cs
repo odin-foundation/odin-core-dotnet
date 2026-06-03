@@ -176,7 +176,18 @@ namespace Odin.Core.Parsing
                                 text = "#%" + t.Value;
                                 break;
                             case TokenType.BooleanPrefix:
-                                text = "?";
+                                // ?true / ?false arrives as a '?' followed by the literal;
+                                // fold the value into one token so the re-parse sees a boolean.
+                                if (i + 1 < tokens.Count
+                                    && (tokens[i + 1].Value == "true" || tokens[i + 1].Value == "false"))
+                                {
+                                    text = "?" + tokens[i + 1].Value;
+                                    parts.Add(text);
+                                    consumed += 2;
+                                    i += 2;
+                                    continue;
+                                }
+                                text = "?true";
                                 break;
                             case TokenType.QuotedString:
                                 text = "\"" + t.Value + "\"";

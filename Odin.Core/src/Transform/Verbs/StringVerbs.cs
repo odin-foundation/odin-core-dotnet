@@ -175,6 +175,106 @@ internal static class StringVerbs
         reg["levenshtein"] = Levenshtein;
         reg["soundex"] = Soundex;
         reg["formatPhone"] = FormatPhone;
+        reg["escapeHtml"] = EscapeHtml;
+        reg["unescapeHtml"] = UnescapeHtml;
+        reg["escapeXml"] = EscapeXml;
+        reg["stripTags"] = StripTags;
+        reg["template"] = Template;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Markup escaping and templating verbs
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static readonly Regex TagPattern = new Regex("<[^>]*>", RegexOptions.Compiled);
+    private static readonly Regex NamedEntity = new Regex("&(?:amp|lt|gt|quot|apos|#39);", RegexOptions.Compiled);
+    private static readonly Regex DecEntity = new Regex("&#(\\d+);", RegexOptions.Compiled);
+    private static readonly Regex HexEntity = new Regex("&#x([0-9a-fA-F]+);", RegexOptions.Compiled);
+    private static readonly Regex Placeholder = new Regex("\\{([^{}]+)\\}", RegexOptions.Compiled);
+
+    private static string EscapeMarkup(string s, bool xml)
+    {
+        var sb = new StringBuilder(s.Length);
+        foreach (var c in s)
+        {
+            switch (c)
+            {
+                case '&': sb.Append("&amp;"); break;
+                case '<': sb.Append("&lt;"); break;
+                case '>': sb.Append("&gt;"); break;
+                case '"': sb.Append("&quot;"); break;
+                case '\'': sb.Append(xml ? "&apos;" : "&#39;"); break;
+                default: sb.Append(c); break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Escape &amp;&lt;&gt;"' as HTML entities. args[0]=string.</summary>
+    private static DynValue EscapeHtml(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length == 0) return DynValue.Null();
+        return DynValue.String(EscapeMarkup(ToStr(args[0]), xml: false));
+    }
+
+    /// <summary>Escape &amp;&lt;&gt;"' as XML entities (apostrophe as &amp;apos;). args[0]=string.</summary>
+    private static DynValue EscapeXml(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length == 0) return DynValue.Null();
+        return DynValue.String(EscapeMarkup(ToStr(args[0]), xml: true));
+    }
+
+    /// <summary>Decode HTML entities, including numeric references. args[0]=string.</summary>
+    private static DynValue UnescapeHtml(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length == 0) return DynValue.Null();
+        var s = NamedEntity.Replace(ToStr(args[0]), m =>
+        {
+            switch (m.Value)
+            {
+                case "&amp;": return "&";
+                case "&lt;": return "<";
+                case "&gt;": return ">";
+                case "&quot;": return "\"";
+                case "&apos;":
+                case "&#39;": return "'";
+                default: return m.Value;
+            }
+        });
+        s = DecEntity.Replace(s, m => char.ConvertFromUtf32(int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)));
+        s = HexEntity.Replace(s, m => char.ConvertFromUtf32(int.Parse(m.Groups[1].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture)));
+        return DynValue.String(s);
+    }
+
+    /// <summary>Remove HTML/XML tags, leaving text content. args[0]=string.</summary>
+    private static DynValue StripTags(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length == 0) return DynValue.Null();
+        return DynValue.String(TagPattern.Replace(ToStr(args[0]), ""));
+    }
+
+    /// <summary>Substitute {key} placeholders from an object. args[0]=template, args[1]=data object.</summary>
+    private static DynValue Template(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Null();
+        var tpl = ToStr(args[0]);
+        var fields = args[1].AsObject();
+        var result = Placeholder.Replace(tpl, m =>
+        {
+            var k = m.Groups[1].Value.Trim();
+            if (fields == null) return "";
+            for (int i = 0; i < fields.Count; i++)
+            {
+                if (fields[i].Key == k)
+                {
+                    var v = fields[i].Value;
+                    if (v.IsNull) return "";
+                    return VerbHelpers.CoerceStr(v);
+                }
+            }
+            return "";
+        });
+        return DynValue.String(result);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

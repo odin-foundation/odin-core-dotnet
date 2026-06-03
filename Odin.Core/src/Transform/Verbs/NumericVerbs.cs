@@ -136,6 +136,57 @@ internal static class NumericVerbs
         reg["round"] = Round;
         reg["mod"] = Mod;
         reg["convertUnit"] = ConvertUnit;
+        reg["gcd"] = Gcd;
+        reg["lcm"] = Lcm;
+        reg["factorial"] = Factorial;
+    }
+
+    // Numeric coercion matching transform value semantics: null and unparseable strings become 0.
+    private static double ToNum(DynValue v)
+    {
+        var d = ToDouble(v);
+        if (d.HasValue) return d.Value;
+        if (v.Type == DynValueType.Bool) return v.AsBool()!.Value ? 1 : 0;
+        if (v.Type == DynValueType.Array) return v.AsArray()?.Count ?? 0;
+        return 0;
+    }
+
+    /// <summary>Greatest common divisor of two integers. args[0]=a, args[1]=b.</summary>
+    private static DynValue Gcd(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Null();
+        double a = Math.Abs(Math.Truncate(ToNum(args[0])));
+        double b = Math.Abs(Math.Truncate(ToNum(args[1])));
+        if (double.IsNaN(a) || double.IsInfinity(a) || double.IsNaN(b) || double.IsInfinity(b)) return DynValue.Null();
+        while (b != 0) { var t = b; b = a % b; a = t; }
+        return DynValue.Integer((long)Math.Floor(a));
+    }
+
+    /// <summary>Least common multiple of two integers. args[0]=a, args[1]=b.</summary>
+    private static DynValue Lcm(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Null();
+        double a = Math.Abs(Math.Truncate(ToNum(args[0])));
+        double b = Math.Abs(Math.Truncate(ToNum(args[1])));
+        if (double.IsNaN(a) || double.IsInfinity(a) || double.IsNaN(b) || double.IsInfinity(b)) return DynValue.Null();
+        if (a == 0 || b == 0) return DynValue.Integer(0);
+        double x = a, y = b;
+        while (y != 0) { var t = y; y = x % y; x = t; }
+        double result = (a / x) * b;
+        const double maxSafe = 9007199254740991.0;
+        if (Math.Abs(result) > maxSafe) return DynValue.Null();
+        return DynValue.Integer((long)Math.Floor(result));
+    }
+
+    /// <summary>Factorial n! for 0 &lt;= n &lt;= 18. args[0]=n. Returns null outside that range.</summary>
+    private static DynValue Factorial(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length == 0) return DynValue.Null();
+        double n = ToNum(args[0]);
+        if (n != Math.Floor(n) || double.IsNaN(n) || double.IsInfinity(n) || n < 0 || n > 18) return DynValue.Null();
+        long result = 1;
+        for (int i = 2; i <= n; i++) result *= i;
+        return DynValue.Integer(result);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

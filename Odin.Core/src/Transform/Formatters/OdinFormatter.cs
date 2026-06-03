@@ -107,6 +107,7 @@ namespace Odin.Core.Transform
 
                         if (val.Type == DynValueType.Object)
                         {
+                            if ((val.AsObject()?.Count ?? 0) == 0) continue; // empty objects produce no section
                             if (deep && IsPureLeafChain(val)) continue; // already flattened
                             if (deep && IsSingleScalarArrayChild(val, out var arrKey, out var arrItems))
                             {
@@ -200,6 +201,8 @@ namespace Odin.Core.Transform
             for (int i = 0; i < entries.Count; i++)
             {
                 var child = entries[i].Value;
+                if (child.Type == DynValueType.Object && (child.AsObject()?.Count ?? 0) == 0)
+                    continue; // empty objects produce no section
                 if (child.Type == DynValueType.Object && !IsPureLeafChain(child))
                 {
                     string childFullPath = fullPath + "." + entries[i].Key;

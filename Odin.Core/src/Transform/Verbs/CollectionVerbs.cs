@@ -64,6 +64,17 @@ internal static class CollectionVerbs
         reg["reduce"] = Reduce;
         reg["pivot"] = Pivot;
         reg["unpivot"] = Unpivot;
+        reg["intersection"] = Intersection;
+        reg["union"] = Union;
+        reg["difference"] = Difference;
+        reg["symmetricDifference"] = SymmetricDifference;
+        reg["countBy"] = CountBy;
+        reg["keyBy"] = KeyBy;
+        reg["explode"] = Explode;
+        reg["window"] = Window;
+        reg["countIf"] = CountIf;
+        reg["sumIf"] = SumIf;
+        reg["avgIf"] = AvgIf;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1368,5 +1379,297 @@ internal static class CollectionVerbs
         }
 
         return DynValue.Array(result);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Set, grouping, and predicate-aggregation verbs
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Canonical equality key for dedup across set operations.
+    private static string ValueKey(DynValue v)
+    {
+        switch (v.Type)
+        {
+            case DynValueType.Integer:
+                return "n:" + ((double)v.AsInt64()!.Value).ToString("R", CultureInfo.InvariantCulture);
+            case DynValueType.Float:
+            case DynValueType.Currency:
+            case DynValueType.Percent:
+            case DynValueType.FloatRaw:
+            case DynValueType.CurrencyRaw:
+                var d = v.AsDouble();
+                return d.HasValue ? "n:" + d.Value.ToString("R", CultureInfo.InvariantCulture) : "s:" + (v.AsString() ?? "");
+            case DynValueType.Bool:
+                return "b:" + (v.AsBool()!.Value ? "1" : "0");
+            case DynValueType.Null:
+                return "null";
+            case DynValueType.String:
+            case DynValueType.Date:
+            case DynValueType.Timestamp:
+            case DynValueType.Time:
+            case DynValueType.Reference:
+            case DynValueType.Binary:
+            case DynValueType.Duration:
+                return "s:" + (v.AsString() ?? "");
+            default:
+                return v.ToString();
+        }
+    }
+
+    private static double ToNumberLoose(DynValue v)
+    {
+        var d = v.AsDouble();
+        if (d.HasValue) return d.Value;
+        if (v.Type == DynValueType.String)
+        {
+            var s = v.AsString();
+            if (s != null && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var n)) return n;
+            return 0;
+        }
+        if (v.Type == DynValueType.Bool) return v.AsBool()!.Value ? 1 : 0;
+        if (v.Type == DynValueType.Array) return v.AsArray()?.Count ?? 0;
+        return 0;
+    }
+
+    /// <summary>Values present in both arrays, deduped, in order of first occurrence in A. args[0]=a, args[1]=b.</summary>
+    private static DynValue Intersection(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Array(new List<DynValue>());
+        var a = ExtractArray(args[0]);
+        var b = ExtractArray(args[1]);
+        var bKeys = new HashSet<string>();
+        for (int i = 0; i < b.Count; i++) bKeys.Add(ValueKey(b[i]));
+        var seen = new HashSet<string>();
+        var result = new List<DynValue>();
+        for (int i = 0; i < a.Count; i++)
+        {
+            var k = ValueKey(a[i]);
+            if (bKeys.Contains(k) && seen.Add(k)) result.Add(a[i]);
+        }
+        return DynValue.Array(result);
+    }
+
+    /// <summary>Values in either array, deduped, A first then new-from-B. args[0]=a, args[1]=b.</summary>
+    private static DynValue Union(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Array(new List<DynValue>());
+        var seen = new HashSet<string>();
+        var result = new List<DynValue>();
+        foreach (var arr in new[] { ExtractArray(args[0]), ExtractArray(args[1]) })
+            for (int i = 0; i < arr.Count; i++)
+            {
+                var k = ValueKey(arr[i]);
+                if (seen.Add(k)) result.Add(arr[i]);
+            }
+        return DynValue.Array(result);
+    }
+
+    /// <summary>Values in A not in B, deduped, in order of A. args[0]=a, args[1]=b.</summary>
+    private static DynValue Difference(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Array(new List<DynValue>());
+        var a = ExtractArray(args[0]);
+        var b = ExtractArray(args[1]);
+        var bKeys = new HashSet<string>();
+        for (int i = 0; i < b.Count; i++) bKeys.Add(ValueKey(b[i]));
+        var seen = new HashSet<string>();
+        var result = new List<DynValue>();
+        for (int i = 0; i < a.Count; i++)
+        {
+            var k = ValueKey(a[i]);
+            if (!bKeys.Contains(k) && seen.Add(k)) result.Add(a[i]);
+        }
+        return DynValue.Array(result);
+    }
+
+    /// <summary>Values in exactly one array, A-only then B-only, deduped. args[0]=a, args[1]=b.</summary>
+    private static DynValue SymmetricDifference(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Array(new List<DynValue>());
+        var a = ExtractArray(args[0]);
+        var b = ExtractArray(args[1]);
+        var aKeys = new HashSet<string>();
+        for (int i = 0; i < a.Count; i++) aKeys.Add(ValueKey(a[i]));
+        var bKeys = new HashSet<string>();
+        for (int i = 0; i < b.Count; i++) bKeys.Add(ValueKey(b[i]));
+        var seen = new HashSet<string>();
+        var result = new List<DynValue>();
+        for (int i = 0; i < a.Count; i++)
+        {
+            var k = ValueKey(a[i]);
+            if (!bKeys.Contains(k) && seen.Add(k)) result.Add(a[i]);
+        }
+        for (int i = 0; i < b.Count; i++)
+        {
+            var k = ValueKey(b[i]);
+            if (!aKeys.Contains(k) && seen.Add(k)) result.Add(b[i]);
+        }
+        return DynValue.Array(result);
+    }
+
+    /// <summary>Map of value (or field value) to occurrence count; keys sorted. args[0]=items, args[1]=field (optional).</summary>
+    private static DynValue CountBy(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length == 0) return DynValue.Null();
+        var resolved = args[0].AsArray() ?? args[0].ExtractArray();
+        if (resolved == null) return DynValue.Null();
+        var field = args.Length > 1 ? args[1].AsString() : null;
+
+        var counts = new Dictionary<string, long>();
+        for (int i = 0; i < resolved.Count; i++)
+        {
+            var v = field != null ? GetField(resolved[i], field) : resolved[i];
+            var key = VerbHelpers.CoerceStr(v);
+            counts[key] = (counts.TryGetValue(key, out var c) ? c : 0) + 1;
+        }
+
+        var sortedKeys = new List<string>(counts.Keys);
+        sortedKeys.Sort(StringComparer.Ordinal);
+        var result = new List<KeyValuePair<string, DynValue>>();
+        foreach (var key in sortedKeys)
+            if (IsSafeKey(key)) result.Add(new KeyValuePair<string, DynValue>(key, DynValue.Integer(counts[key])));
+        return DynValue.Object(result);
+    }
+
+    /// <summary>Object keyed by each item's field value (last wins on duplicates). args[0]=items, args[1]=field.</summary>
+    private static DynValue KeyBy(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Null();
+        var resolved = args[0].AsArray() ?? args[0].ExtractArray();
+        if (resolved == null) return DynValue.Null();
+        var field = args[1].AsString() ?? "";
+
+        var result = new List<KeyValuePair<string, DynValue>>();
+        var index = new Dictionary<string, int>();
+        for (int i = 0; i < resolved.Count; i++)
+        {
+            var key = VerbHelpers.CoerceStr(GetField(resolved[i], field));
+            if (!IsSafeKey(key)) continue;
+            if (index.TryGetValue(key, out var at))
+                result[at] = new KeyValuePair<string, DynValue>(key, resolved[i]);
+            else
+            {
+                index[key] = result.Count;
+                result.Add(new KeyValuePair<string, DynValue>(key, resolved[i]));
+            }
+        }
+        return DynValue.Object(result);
+    }
+
+    /// <summary>One row per element of the named array field. args[0]=rows, args[1]=field.</summary>
+    private static DynValue Explode(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Array(new List<DynValue>());
+        var resolved = args[0].AsArray() ?? args[0].ExtractArray();
+        if (resolved == null) return DynValue.Array(new List<DynValue>());
+        var field = args[1].AsString() ?? "";
+
+        var result = new List<DynValue>();
+        for (int i = 0; i < resolved.Count; i++)
+        {
+            var item = resolved[i];
+            var baseObj = item.AsObject();
+            if (baseObj == null)
+            {
+                result.Add(item);
+                continue;
+            }
+            var fieldVal = item.Get(field);
+            var elements = fieldVal != null ? (fieldVal.AsArray() ?? fieldVal.ExtractArray()) : null;
+            if (elements == null || elements.Count == 0)
+            {
+                result.Add(DynValue.Object(new List<KeyValuePair<string, DynValue>>(baseObj)));
+                continue;
+            }
+            for (int e = 0; e < elements.Count; e++)
+            {
+                var row = new List<KeyValuePair<string, DynValue>>();
+                bool replaced = false;
+                for (int k = 0; k < baseObj.Count; k++)
+                {
+                    if (baseObj[k].Key == field)
+                    {
+                        row.Add(new KeyValuePair<string, DynValue>(field, elements[e]));
+                        replaced = true;
+                    }
+                    else row.Add(baseObj[k]);
+                }
+                if (!replaced) row.Add(new KeyValuePair<string, DynValue>(field, elements[e]));
+                result.Add(DynValue.Object(row));
+            }
+        }
+        return DynValue.Array(result);
+    }
+
+    /// <summary>Sliding windows of length n (empty if n &lt;= 0 or larger than the array). args[0]=items, args[1]=n.</summary>
+    private static DynValue Window(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Array(new List<DynValue>());
+        var resolved = args[0].AsArray() ?? args[0].ExtractArray();
+        if (resolved == null) return DynValue.Array(new List<DynValue>());
+        int n = (int)Math.Floor(ToNumberLoose(args[1]));
+        if (n <= 0 || resolved.Count < n) return DynValue.Array(new List<DynValue>());
+
+        var result = new List<DynValue>();
+        for (int i = 0; i + n <= resolved.Count; i++)
+            result.Add(DynValue.Array(resolved.GetRange(i, n)));
+        return DynValue.Array(result);
+    }
+
+    /// <summary>Count items whose field matches the condition. args[0]=array, args[1]=field, args[2]=op, args[3]=value.</summary>
+    private static DynValue CountIf(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 4) return DynValue.Integer(0);
+        var resolved = args[0].AsArray() ?? args[0].ExtractArray();
+        if (resolved == null) return DynValue.Integer(0);
+        var field = args[1].AsString() ?? "";
+        var op = args[2].AsString() ?? "";
+        long count = 0;
+        for (int i = 0; i < resolved.Count; i++)
+            if (MatchesCondition(resolved[i], field, op, args[3])) count++;
+        return DynValue.Integer(count);
+    }
+
+    /// <summary>Sum sumField over matching items. args[0]=array, args[1]=field, args[2]=op, args[3]=value, args[4]=sumField (optional).</summary>
+    private static DynValue SumIf(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 4) return DynValue.Integer(0);
+        var resolved = args[0].AsArray() ?? args[0].ExtractArray();
+        if (resolved == null) return DynValue.Integer(0);
+        var field = args[1].AsString() ?? "";
+        var op = args[2].AsString() ?? "";
+        var sumField = args.Length >= 5 ? (args[4].AsString() ?? field) : field;
+        double total = 0;
+        for (int i = 0; i < resolved.Count; i++)
+            if (MatchesCondition(resolved[i], field, op, args[3]))
+                total += ToNumberLoose(GetField(resolved[i], sumField));
+        return NumericResult(total);
+    }
+
+    /// <summary>Average avgField over matching items. args[0]=array, args[1]=field, args[2]=op, args[3]=value, args[4]=avgField (optional).</summary>
+    private static DynValue AvgIf(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 4) return DynValue.Null();
+        var resolved = args[0].AsArray() ?? args[0].ExtractArray();
+        if (resolved == null) return DynValue.Null();
+        var field = args[1].AsString() ?? "";
+        var op = args[2].AsString() ?? "";
+        var avgField = args.Length >= 5 ? (args[4].AsString() ?? field) : field;
+        double total = 0;
+        int count = 0;
+        for (int i = 0; i < resolved.Count; i++)
+            if (MatchesCondition(resolved[i], field, op, args[3]))
+            {
+                total += ToNumberLoose(GetField(resolved[i], avgField));
+                count++;
+            }
+        if (count == 0) return DynValue.Null();
+        return NumericResult(total / count);
+    }
+
+    private static bool IsSafeKey(string key)
+    {
+        var k = key.ToLowerInvariant();
+        return k != "__proto__" && k != "constructor" && k != "prototype";
     }
 }

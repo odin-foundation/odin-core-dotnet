@@ -1263,8 +1263,9 @@ namespace Odin.Core.Transform
                 if (mapping.Modifiers != null && mapping.Modifiers.Confidential && ctx.EnforceConfidential.HasValue)
                     val = ApplyConfidentialToValue(val, ctx.EnforceConfidential.Value);
 
-                // Target "_" is a side-effect-only field (e.g., for accumulate); do not write to output
-                if (mapping.Target != "_")
+                // Any "_"-prefixed target is a computation-only sink: evaluated for side
+                // effects (accumulators, counters) but never emitted to the output.
+                if (!mapping.Target.StartsWith("_", StringComparison.Ordinal))
                 {
                     SetPath(ref output, mapping.Target, val);
 
@@ -1819,6 +1820,14 @@ namespace Odin.Core.Transform
                 return DynValue.Null();
             }
 
+            // Control-flow verbs evaluate the condition first and only the selected
+            // branch, so unselected branches do not fire side effects and and/or/
+            // coalesce short-circuit. Strict-types mode evaluates eagerly to validate
+            // all argument types.
+            if (!call.IsCustom && !ctx.StrictTypes
+                && TryEvaluateLazyVerb(call, ctx, currentSource, currentOutput, out var lazyResult))
+                return lazyResult;
+
             // Standard eager evaluation
             var evaluatedArgs = new DynValue[call.Args.Count];
             for (int i = 0; i < call.Args.Count; i++)
@@ -1877,6 +1886,118 @@ namespace Odin.Core.Transform
             }
 
             return result;
+        }
+
+        // Boolean coercion used by short-circuiting control-flow verbs: strings are
+        // truthy only for true/yes/y/1; numbers for non-zero; collections for non-empty.
+        private static bool ToBooleanLogic(DynValue v)
+        {
+            switch (v.Type)
+            {
+                case DynValueType.Null: return false;
+                case DynValueType.Bool: return v.AsBool()!.Value;
+                case DynValueType.Integer: return v.AsInt64()!.Value != 0;
+                case DynValueType.Float:
+                case DynValueType.Currency:
+                case DynValueType.Percent:
+                    return v.AsDouble() != 0.0;
+                case DynValueType.FloatRaw:
+                case DynValueType.CurrencyRaw:
+                {
+                    var d = v.AsDouble();
+                    return d.HasValue && d.Value != 0.0;
+                }
+                case DynValueType.String:
+                {
+                    var s = (v.AsString() ?? "").ToLowerInvariant();
+                    return s == "true" || s == "yes" || s == "y" || s == "1";
+                }
+                case DynValueType.Date:
+                case DynValueType.Timestamp:
+                    return true;
+                case DynValueType.Time:
+                case DynValueType.Duration:
+                case DynValueType.Reference:
+                    return !string.IsNullOrEmpty(v.AsString());
+                case DynValueType.Binary:
+                    return !string.IsNullOrEmpty(v.AsString());
+                case DynValueType.Array:
+                    return (v.AsArray()?.Count ?? 0) > 0;
+                case DynValueType.Object:
+                    return (v.AsObject()?.Count ?? 0) > 0;
+                default:
+                    return false;
+            }
+        }
+
+        // Evaluate a control-flow verb lazily, evaluating only the arguments needed to
+        // decide the result. Returns false to defer to eager evaluation (too few args).
+        private static bool TryEvaluateLazyVerb(VerbCall call, ExecContext ctx,
+            DynValue currentSource, DynValue currentOutput, out DynValue result)
+        {
+            var a = call.Args;
+            DynValue Ev(int i) => EvaluateVerbArg(a[i], ctx, currentSource, currentOutput);
+            result = DynValue.Null();
+
+            switch (call.Verb)
+            {
+                case "ifNull":
+                {
+                    if (a.Count < 2) return false;
+                    var v0 = Ev(0);
+                    result = v0.IsNull ? Ev(1) : v0;
+                    return true;
+                }
+                case "ifEmpty":
+                {
+                    if (a.Count < 2) return false;
+                    var v0 = Ev(0);
+                    bool empty = v0.Type == DynValueType.String && v0.AsString() == "";
+                    result = empty ? Ev(1) : v0;
+                    return true;
+                }
+                case "coalesce":
+                {
+                    for (int i = 0; i < a.Count; i++)
+                    {
+                        var v = Ev(i);
+                        if (!v.IsNull) { result = v; return true; }
+                    }
+                    result = DynValue.Null();
+                    return true;
+                }
+                case "and":
+                {
+                    if (a.Count < 2) return false;
+                    if (!ToBooleanLogic(Ev(0))) { result = DynValue.Bool(false); return true; }
+                    result = DynValue.Bool(ToBooleanLogic(Ev(1)));
+                    return true;
+                }
+                case "or":
+                {
+                    if (a.Count < 2) return false;
+                    if (ToBooleanLogic(Ev(0))) { result = DynValue.Bool(true); return true; }
+                    result = DynValue.Bool(ToBooleanLogic(Ev(1)));
+                    return true;
+                }
+                case "switch":
+                {
+                    if (a.Count < 2) return false;
+                    var subject = CoerceToString(Ev(0));
+                    for (int i = 1; i < a.Count - 1; i += 2)
+                    {
+                        if (subject == CoerceToString(Ev(i)))
+                        {
+                            result = Ev(i + 1);
+                            return true;
+                        }
+                    }
+                    result = (a.Count - 1) % 2 == 1 ? Ev(a.Count - 1) : DynValue.Null();
+                    return true;
+                }
+                default:
+                    return false;
+            }
         }
 
         // Modifiers that only apply to specific output formats. Using them with any

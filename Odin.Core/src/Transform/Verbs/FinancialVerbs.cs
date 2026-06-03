@@ -57,6 +57,8 @@ internal static class FinancialVerbs
         reg["weightedAvg"] = WeightedAvg;
         reg["npv"] = Npv;
         reg["irr"] = Irr;
+        reg["xnpv"] = Xnpv;
+        reg["xirr"] = Xirr;
         reg["depreciation"] = Depreciation;
         reg["movingAvg"] = MovingAvg;
     }
@@ -721,5 +723,93 @@ internal static class FinancialVerbs
         }
 
         return DynValue.Array(result);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Dated cash-flow verbs
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Convert an item to a day index (days since epoch) for dated cash-flow math.
+    private static double ToDays(DynValue v)
+    {
+        if (v.Type == DynValueType.Date || v.Type == DynValueType.Timestamp)
+        {
+            var s = v.AsString();
+            if (s != null && DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dto))
+                return dto.ToUnixTimeMilliseconds() / 86400000.0;
+            return double.NaN;
+        }
+        var num = v.AsDouble();
+        if (num.HasValue) return num.Value;
+        var str = v.AsString();
+        if (str != null && DateTimeOffset.TryParse(str, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var d))
+            return d.ToUnixTimeMilliseconds() / 86400000.0;
+        return double.NaN;
+    }
+
+    private static List<double>? ExtractDays(DynValue arg)
+    {
+        var items = arg.AsArray() ?? arg.ExtractArray();
+        if (items == null) return null;
+        var result = new List<double>(items.Count);
+        for (int i = 0; i < items.Count; i++) result.Add(ToDays(items[i]));
+        return result;
+    }
+
+    private static double XnpvAt(double rate, List<double> amounts, List<double> days)
+    {
+        double d0 = days[0];
+        double total = 0;
+        for (int i = 0; i < amounts.Count; i++)
+            total += amounts[i] / Math.Pow(1 + rate, (days[i] - d0) / 365.0);
+        return total;
+    }
+
+    /// <summary>Net present value of cash flows on specific dates. args[0]=rate, args[1]=amounts, args[2]=dates.</summary>
+    private static DynValue Xnpv(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 3) return DynValue.Null();
+        var rate = ToDouble(args[0]);
+        var amounts = ExtractDoubles(args[1]);
+        var days = ExtractDays(args[2]);
+        if (!rate.HasValue || amounts == null || days == null) return DynValue.Null();
+        if (amounts.Count == 0 || amounts.Count != days.Count) return DynValue.Null();
+        if (days.Exists(d => double.IsNaN(d) || double.IsInfinity(d))) return DynValue.Null();
+        var result = XnpvAt(rate.Value, amounts, days);
+        if (double.IsNaN(result) || double.IsInfinity(result)) return DynValue.Null();
+        return NumericResult(result);
+    }
+
+    /// <summary>Internal rate of return for cash flows on specific dates. args[0]=amounts, args[1]=dates, args[2]=guess (optional).</summary>
+    private static DynValue Xirr(DynValue[] args, VerbContext ctx)
+    {
+        if (args.Length < 2) return DynValue.Null();
+        var amounts = ExtractDoubles(args[0]);
+        var days = ExtractDays(args[1]);
+        if (amounts == null || days == null || amounts.Count < 2 || amounts.Count != days.Count) return DynValue.Null();
+        if (days.Exists(d => double.IsNaN(d) || double.IsInfinity(d))) return DynValue.Null();
+
+        double rate = args.Length >= 3 ? (ToDouble(args[2]) ?? 0.1) : 0.1;
+        const int maxIterations = 100;
+        const double precision = 1e-7;
+        double d0 = days[0];
+
+        for (int i = 0; i < maxIterations; i++)
+        {
+            double value = 0, derivative = 0;
+            for (int j = 0; j < amounts.Count; j++)
+            {
+                double exp = (days[j] - d0) / 365.0;
+                double factor = Math.Pow(1 + rate, exp);
+                value += amounts[j] / factor;
+                derivative -= (exp * amounts[j]) / Math.Pow(1 + rate, exp + 1);
+            }
+            if (Math.Abs(value) < precision) return NumericResult(rate);
+            if (Math.Abs(derivative) < 1e-12) return DynValue.Null();
+            double next = rate - value / derivative;
+            if (double.IsNaN(next) || double.IsInfinity(next) || next <= -1) return DynValue.Null();
+            rate = next;
+        }
+        return DynValue.Null();
     }
 }
