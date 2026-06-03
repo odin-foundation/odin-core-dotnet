@@ -87,6 +87,39 @@ internal static class DateTimeVerbs
         return null;
     }
 
+    // Parse a date/time string by token positions in a simple pattern.
+    private static DateTime? ParseWithPattern(string s, string pattern)
+    {
+        try
+        {
+            int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+
+            int yp = pattern.IndexOf("YYYY", StringComparison.Ordinal);
+            int mp = pattern.IndexOf("MM", StringComparison.Ordinal);
+            int dp = pattern.IndexOf("DD", StringComparison.Ordinal);
+            int hp = pattern.IndexOf("HH", StringComparison.Ordinal);
+            int minp = pattern.IndexOf("mm", StringComparison.Ordinal);
+            int sp = pattern.IndexOf("ss", StringComparison.Ordinal);
+
+            if (yp >= 0 && yp + 4 <= s.Length) year = int.Parse(s.Substring(yp, 4), CultureInfo.InvariantCulture);
+            if (mp >= 0 && mp + 2 <= s.Length) month = int.Parse(s.Substring(mp, 2), CultureInfo.InvariantCulture);
+            if (dp >= 0 && dp + 2 <= s.Length) day = int.Parse(s.Substring(dp, 2), CultureInfo.InvariantCulture);
+            if (hp >= 0 && hp + 2 <= s.Length) hour = int.Parse(s.Substring(hp, 2), CultureInfo.InvariantCulture);
+            if (minp >= 0 && minp + 2 <= s.Length) minute = int.Parse(s.Substring(minp, 2), CultureInfo.InvariantCulture);
+            if (sp >= 0 && sp + 2 <= s.Length) second = int.Parse(s.Substring(sp, 2), CultureInfo.InvariantCulture);
+
+            if (year == 0 && month == 0 && day == 0) return null;
+            if (month == 0) month = 1;
+            if (day == 0) day = 1;
+            if (month < 1 || month > 12 || day < 1 || day > DateTime.DaysInMonth(year, month)) return null;
+            if (hour > 23 || minute > 59 || second > 59) return null;
+            return new DateTime(year, month, day, hour, minute, second);
+        }
+        catch (FormatException) { return null; }
+        catch (ArgumentOutOfRangeException) { return null; }
+        catch (OverflowException) { return null; }
+    }
+
     /// <summary>Format a DateTime as a date-only string.</summary>
     private static string FormatAsDate(DateTime dt)
     {
@@ -262,11 +295,13 @@ internal static class DateTimeVerbs
     /// </summary>
     private static DynValue ParseTimestamp(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Null();
+        if (args.Length < 2) return DynValue.Null();
         var s = ExtractDateStr(args[0]);
         if (s == null) return DynValue.Null();
+        var pattern = args[1].AsString();
 
-        var dt = ParseDt(s);
+        DateTime? dt = pattern != null ? ParseWithPattern(s, pattern) : null;
+        if (dt == null) dt = ParseDt(s);
         if (dt == null) return DynValue.Null();
 
         return DynValue.String(dt.Value.ToString("yyyy-MM-ddTHH:mm:ss", CultureInfo.InvariantCulture));
@@ -532,7 +567,10 @@ internal static class DateTimeVerbs
         var dt = ParseDt(s);
         if (dt == null) return DynValue.Null();
 
-        return DynValue.Integer((long)dt.Value.DayOfWeek);
+        // ISO weekday: Monday=1 .. Sunday=7
+        int iso = (int)dt.Value.DayOfWeek;
+        iso = iso == 0 ? 7 : iso;
+        return DynValue.Integer(iso);
     }
 
     /// <summary>
@@ -547,9 +585,19 @@ internal static class DateTimeVerbs
         var dt = ParseDt(s);
         if (dt == null) return DynValue.Null();
 
-        var cal = CultureInfo.InvariantCulture.Calendar;
-        int week = cal.GetWeekOfYear(dt.Value, CalendarWeekRule.FirstFourDayWeek, System.DayOfWeek.Monday);
-        return DynValue.Integer(week);
+        return DynValue.Integer(IsoWeekOfYear(dt.Value));
+    }
+
+    // ISO 8601 week number (Monday start, 4-day rule). Returns 1-53.
+    private static int IsoWeekOfYear(DateTime date)
+    {
+        var d = date.Date;
+        // Thursday of the current ISO week determines the year.
+        int isoDow = (int)d.DayOfWeek;
+        isoDow = isoDow == 0 ? 7 : isoDow;
+        var thursday = d.AddDays(4 - isoDow);
+        var jan1 = new DateTime(thursday.Year, 1, 1);
+        return (int)Math.Floor((thursday - jan1).TotalDays / 7) + 1;
     }
 
     /// <summary>
@@ -683,7 +731,7 @@ internal static class DateTimeVerbs
         if (s1 == null || s2 == null) return DynValue.Null();
 
         var diff = DateUtils.DateDiffDays(s1, s2);
-        return diff.HasValue ? DynValue.Integer(Math.Abs(diff.Value)) : DynValue.Null();
+        return diff.HasValue ? DynValue.Integer(diff.Value) : DynValue.Null();
     }
 
     /// <summary>
@@ -730,13 +778,22 @@ internal static class DateTimeVerbs
     {
         if (args.Length == 0) return DynValue.Bool(false);
         var s = ExtractDateStr(args[0]);
-        if (s == null) return DynValue.Bool(false);
+        if (s == null || s.Length == 0) return DynValue.Bool(false);
 
         var parsed = DateUtils.ParseDate(s);
-        if (!parsed.HasValue) return DynValue.Bool(false);
+        if (parsed.HasValue)
+        {
+            var (year, month, day) = parsed.Value;
+            if (DateUtils.IsValidDate(year, month, day)) return DynValue.Bool(true);
+        }
 
-        var (year, month, day) = parsed.Value;
-        return DynValue.Bool(DateUtils.IsValidDate(year, month, day));
+        if (args.Length >= 2)
+        {
+            var pattern = args[1].AsString();
+            if (pattern != null && ParseWithPattern(s, pattern) != null)
+                return DynValue.Bool(true);
+        }
+        return DynValue.Bool(false);
     }
 
     /// <summary>

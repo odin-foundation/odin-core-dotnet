@@ -94,6 +94,14 @@ internal static class CollectionVerbs
         return new List<DynValue>();
     }
 
+    // Returns the array contents, or null when the value is genuinely not an array.
+    private static List<DynValue>? AsArrayOrNull(DynValue v)
+    {
+        var arr = v.AsArray();
+        if (arr != null) return arr;
+        return v.ExtractArray();
+    }
+
     /// <summary>Check if a DynValue is truthy (non-null, non-false, non-empty-string, non-zero).</summary>
     private static bool IsTruthy(DynValue v)
     {
@@ -182,22 +190,22 @@ internal static class CollectionVerbs
                 return fieldStr != cmpStr;
             case "<":
             {
-                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                var a = VerbHelpers.CoerceNum(fieldVal); var b = VerbHelpers.CoerceNum(compareValue);
                 return a.HasValue && b.HasValue && a.Value < b.Value;
             }
             case "<=":
             {
-                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                var a = VerbHelpers.CoerceNum(fieldVal); var b = VerbHelpers.CoerceNum(compareValue);
                 return a.HasValue && b.HasValue && a.Value <= b.Value;
             }
             case ">":
             {
-                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                var a = VerbHelpers.CoerceNum(fieldVal); var b = VerbHelpers.CoerceNum(compareValue);
                 return a.HasValue && b.HasValue && a.Value > b.Value;
             }
             case ">=":
             {
-                var a = ToDouble(fieldVal); var b = ToDouble(compareValue);
+                var a = VerbHelpers.CoerceNum(fieldVal); var b = VerbHelpers.CoerceNum(compareValue);
                 return a.HasValue && b.HasValue && a.Value >= b.Value;
             }
             case "contains":
@@ -521,14 +529,23 @@ internal static class CollectionVerbs
     private static DynValue Every(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Bool(true);
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+
         string? fieldName = args.Length >= 2 ? args[1].AsString() : null;
+        string? op = args.Length >= 4 ? args[2].AsString() : null;
 
         for (int i = 0; i < arr.Count; i++)
         {
-            DynValue testVal = fieldName != null ? GetField(arr[i], fieldName) : arr[i];
-            if (!IsTruthy(testVal))
-                return DynValue.Bool(false);
+            bool ok;
+            if (op != null && fieldName != null)
+                ok = MatchesCondition(arr[i], fieldName, op, args[3]);
+            else
+            {
+                DynValue testVal = fieldName != null ? GetField(arr[i], fieldName) : arr[i];
+                ok = IsTruthy(testVal);
+            }
+            if (!ok) return DynValue.Bool(false);
         }
 
         return DynValue.Bool(true);
@@ -541,14 +558,23 @@ internal static class CollectionVerbs
     private static DynValue Some(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Bool(false);
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+
         string? fieldName = args.Length >= 2 ? args[1].AsString() : null;
+        string? op = args.Length >= 4 ? args[2].AsString() : null;
 
         for (int i = 0; i < arr.Count; i++)
         {
-            DynValue testVal = fieldName != null ? GetField(arr[i], fieldName) : arr[i];
-            if (IsTruthy(testVal))
-                return DynValue.Bool(true);
+            bool ok;
+            if (op != null && fieldName != null)
+                ok = MatchesCondition(arr[i], fieldName, op, args[3]);
+            else
+            {
+                DynValue testVal = fieldName != null ? GetField(arr[i], fieldName) : arr[i];
+                ok = IsTruthy(testVal);
+            }
+            if (ok) return DynValue.Bool(true);
         }
 
         return DynValue.Bool(false);
@@ -618,13 +644,18 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue ConcatArrays(DynValue[] args, VerbContext ctx)
     {
+        if (args.Length < 2) return DynValue.Null();
+        bool anyArray = false;
         var result = new List<DynValue>();
         for (int i = 0; i < args.Length; i++)
         {
-            var arr = ExtractArray(args[i]);
+            var arr = AsArrayOrNull(args[i]);
+            if (arr == null) continue;
+            anyArray = true;
             for (int j = 0; j < arr.Count; j++)
                 result.Add(arr[j]);
         }
+        if (!anyArray) return DynValue.Null();
         return DynValue.Array(result);
     }
 
@@ -634,25 +665,24 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue Zip(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Array(new List<DynValue>());
+        if (args.Length < 2) return DynValue.Null();
 
         var arrays = new List<List<DynValue>>();
-        int maxLen = 0;
+        int minLen = int.MaxValue;
         for (int i = 0; i < args.Length; i++)
         {
-            var arr = ExtractArray(args[i]);
+            var arr = AsArrayOrNull(args[i]);
+            if (arr == null) return DynValue.Null();
             arrays.Add(arr);
-            if (arr.Count > maxLen) maxLen = arr.Count;
+            if (arr.Count < minLen) minLen = arr.Count;
         }
 
         var result = new List<DynValue>();
-        for (int i = 0; i < maxLen; i++)
+        for (int i = 0; i < minLen; i++)
         {
             var tuple = new List<DynValue>();
             for (int j = 0; j < arrays.Count; j++)
-            {
-                tuple.Add(i < arrays[j].Count ? arrays[j][i] : DynValue.Null());
-            }
+                tuple.Add(arrays[j][i]);
             result.Add(DynValue.Array(tuple));
         }
 
@@ -734,11 +764,12 @@ internal static class CollectionVerbs
     private static DynValue Take(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        var count = ToInt(args[1]);
-        if (!count.HasValue) return DynValue.Null();
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+        var count = ToInt(args[1]) ?? 0;
+        if (count < 0) return DynValue.Null();
 
-        int n = Math.Min(Math.Max(0, count.Value), arr.Count);
+        int n = Math.Min(count, arr.Count);
         var result = new List<DynValue>();
         for (int i = 0; i < n; i++)
             result.Add(arr[i]);
@@ -752,11 +783,12 @@ internal static class CollectionVerbs
     private static DynValue Drop(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        var count = ToInt(args[1]);
-        if (!count.HasValue) return DynValue.Null();
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+        var count = ToInt(args[1]) ?? 0;
+        if (count < 0) return DynValue.Null();
 
-        int skip = Math.Min(Math.Max(0, count.Value), arr.Count);
+        int skip = Math.Min(count, arr.Count);
         var result = new List<DynValue>();
         for (int i = skip; i < arr.Count; i++)
             result.Add(arr[i]);
@@ -770,7 +802,8 @@ internal static class CollectionVerbs
     private static DynValue Chunk(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
         var size = ToInt(args[1]);
         if (!size.HasValue || size.Value <= 0) return DynValue.Null();
 
@@ -844,7 +877,8 @@ internal static class CollectionVerbs
     private static DynValue Compact(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
         var result = new List<DynValue>();
 
         for (int i = 0; i < arr.Count; i++)
@@ -976,7 +1010,8 @@ internal static class CollectionVerbs
     private static DynValue Dedupe(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
         if (arr.Count == 0) return DynValue.Array(new List<DynValue>());
 
         string keyField = args[1].AsString() ?? "";
@@ -1014,7 +1049,8 @@ internal static class CollectionVerbs
     private static DynValue Cumsum(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
         var result = new List<DynValue>();
         double running = 0;
 
@@ -1041,7 +1077,8 @@ internal static class CollectionVerbs
     private static DynValue Cumprod(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
         var result = new List<DynValue>();
         double running = 1;
 
@@ -1069,16 +1106,22 @@ internal static class CollectionVerbs
     private static DynValue Diff(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        var result = new List<DynValue>();
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
 
-        if (arr.Count > 0)
-            result.Add(DynValue.Null());
-
-        for (int i = 1; i < arr.Count; i++)
+        int periods = 1;
+        if (args.Length >= 2)
         {
+            var p = ToInt(args[1]);
+            if (p.HasValue) periods = Math.Max(1, p.Value);
+        }
+
+        var result = new List<DynValue>();
+        for (int i = 0; i < arr.Count; i++)
+        {
+            if (i < periods) { result.Add(DynValue.Null()); continue; }
             var curr = ToDouble(arr[i]);
-            var prev = ToDouble(arr[i - 1]);
+            var prev = ToDouble(arr[i - periods]);
             if (curr.HasValue && prev.HasValue)
                 result.Add(NumericResult(curr.Value - prev.Value));
             else
@@ -1095,19 +1138,25 @@ internal static class CollectionVerbs
     private static DynValue PctChange(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        var result = new List<DynValue>();
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
 
-        if (arr.Count > 0)
-            result.Add(DynValue.Null());
-
-        for (int i = 1; i < arr.Count; i++)
+        int periods = 1;
+        if (args.Length >= 2)
         {
+            var p = ToInt(args[1]);
+            if (p.HasValue) periods = Math.Max(1, p.Value);
+        }
+
+        var result = new List<DynValue>();
+        for (int i = 0; i < arr.Count; i++)
+        {
+            if (i < periods) { result.Add(DynValue.Null()); continue; }
             var curr = ToDouble(arr[i]);
-            var prev = ToDouble(arr[i - 1]);
+            var prev = ToDouble(arr[i - periods]);
             // ReSharper disable once CompareOfFloatsByEqualityOperator
             if (curr.HasValue && prev.HasValue && prev.Value != 0.0)
-                result.Add(DynValue.Float((curr.Value - prev.Value) / prev.Value));
+                result.Add(NumericResult((curr.Value - prev.Value) / prev.Value));
             else
                 result.Add(DynValue.Null());
         }
@@ -1121,12 +1170,17 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue Shift(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length < 2) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        var n = ToInt(args[1]);
-        if (!n.HasValue) return DynValue.Array(new List<DynValue>(arr));
-
-        return ShiftArray(arr, n.Value);
+        if (args.Length < 1) return DynValue.Null();
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+        int n = 1;
+        if (args.Length >= 2)
+        {
+            var nVal = ToInt(args[1]);
+            if (nVal.HasValue) n = nVal.Value;
+        }
+        var fill = args.Length >= 3 ? args[2] : DynValue.Null();
+        return ShiftArray(arr, n, fill);
     }
 
     /// <summary>
@@ -1136,15 +1190,20 @@ internal static class CollectionVerbs
     private static DynValue Lag(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        int n = 1;
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+        int periods = 1;
         if (args.Length >= 2)
         {
             var nVal = ToInt(args[1]);
-            if (nVal.HasValue) n = nVal.Value;
+            if (nVal.HasValue) periods = Math.Max(1, nVal.Value);
         }
+        var def = args.Length >= 3 ? args[2] : DynValue.Null();
 
-        return ShiftArray(arr, n);
+        var result = new List<DynValue>(arr.Count);
+        for (int i = 0; i < arr.Count; i++)
+            result.Add(i < periods ? def : arr[i - periods]);
+        return DynValue.Array(result);
     }
 
     /// <summary>
@@ -1154,43 +1213,39 @@ internal static class CollectionVerbs
     private static DynValue Lead(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        int n = 1;
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+        int periods = 1;
         if (args.Length >= 2)
         {
             var nVal = ToInt(args[1]);
-            if (nVal.HasValue) n = nVal.Value;
+            if (nVal.HasValue) periods = Math.Max(1, nVal.Value);
         }
+        var def = args.Length >= 3 ? args[2] : DynValue.Null();
 
-        return ShiftArray(arr, -n);
+        int length = arr.Count;
+        var result = new List<DynValue>(length);
+        for (int i = 0; i < length; i++)
+            result.Add(i >= length - periods ? def : arr[i + periods]);
+        return DynValue.Array(result);
     }
 
-    /// <summary>Internal helper to shift an array by N positions.</summary>
-    private static DynValue ShiftArray(List<DynValue> arr, int n)
+    /// <summary>Internal helper to shift an array by N positions, filling gaps.</summary>
+    private static DynValue ShiftArray(List<DynValue> arr, int n, DynValue fill)
     {
-        var result = new List<DynValue>(arr.Count);
-        int absN = Math.Abs(n);
+        int length = arr.Count;
+        var result = new List<DynValue>(length);
 
-        if (n > 0)
+        if (n >= 0)
         {
-            // Shift right: prepend nulls
-            for (int i = 0; i < Math.Min(absN, arr.Count); i++)
-                result.Add(DynValue.Null());
-            for (int i = 0; i < arr.Count - absN; i++)
-                result.Add(arr[i]);
-        }
-        else if (n < 0)
-        {
-            // Shift left: append nulls
-            for (int i = absN; i < arr.Count; i++)
-                result.Add(arr[i]);
-            for (int i = 0; i < Math.Min(absN, arr.Count); i++)
-                result.Add(DynValue.Null());
+            for (int i = 0; i < length; i++)
+                result.Add(i < n ? fill : arr[i - n]);
         }
         else
         {
-            for (int i = 0; i < arr.Count; i++)
-                result.Add(arr[i]);
+            int absN = -n;
+            for (int i = 0; i < length; i++)
+                result.Add(i >= length - absN ? fill : arr[i + absN]);
         }
 
         return DynValue.Array(result);
@@ -1203,28 +1258,33 @@ internal static class CollectionVerbs
     private static DynValue Rank(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null || arr.Count == 0) return DynValue.Null();
 
-        // Build list of (value, originalIndex) for non-null entries
-        var indexed = new List<(double val, int idx)>();
+        string field = args.Length > 1 ? (args[1].AsString() ?? "") : "";
+        string direction = args.Length > 2 ? (args[2].AsString() ?? "desc").ToLowerInvariant() : "desc";
+
+        DynValue ValueOf(DynValue item)
+            => (field.Length > 0 && item.Type == DynValueType.Object) ? GetField(item, field) : item;
+
+        var indexed = new List<(int idx, DynValue val)>();
         for (int i = 0; i < arr.Count; i++)
-        {
-            var v = ToDouble(arr[i]);
-            if (v.HasValue)
-                indexed.Add((v.Value, i));
-        }
+            indexed.Add((i, ValueOf(arr[i])));
 
-        // Sort descending for ranking (highest = rank 1)
-        indexed.Sort((a, b) => b.val.CompareTo(a.val));
+        int mult = direction == "asc" ? 1 : -1;
+        indexed.Sort((a, b) =>
+        {
+            int c = mult * CompareDynValues(a.val, b.val);
+            return c != 0 ? c : a.idx.CompareTo(b.idx);
+        });
 
         var ranks = new int[arr.Count];
         int currentRank = 1;
-        for (int i = 0; i < indexed.Count; i++)
+        for (int j = 0; j < indexed.Count; j++)
         {
-            // ReSharper disable once CompareOfFloatsByEqualityOperator
-            if (i > 0 && indexed[i].val != indexed[i - 1].val)
-                currentRank = i + 1;
-            ranks[indexed[i].idx] = currentRank;
+            if (j > 0 && !AreEqual(indexed[j].val, indexed[j - 1].val))
+                currentRank = j + 1;
+            ranks[indexed[j].idx] = currentRank;
         }
 
         var result = new List<DynValue>(arr.Count);
@@ -1241,42 +1301,50 @@ internal static class CollectionVerbs
     /// </summary>
     private static DynValue FillMissing(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length < 2) return DynValue.Null();
-        var arr = ExtractArray(args[0]);
-        var strategyStr = args[1].AsString();
+        if (args.Length < 1) return DynValue.Null();
+        var arr = AsArrayOrNull(args[0]);
+        if (arr == null) return DynValue.Null();
+
+        var fillValue = args.Length >= 2 ? args[1] : DynValue.Null();
+        var strategy = args.Length >= 3 ? (args[2].AsString() ?? "value").ToLowerInvariant() : "value";
 
         var result = new List<DynValue>(arr);
 
-        if (strategyStr == "forward")
+        if (strategy == "forward")
         {
-            DynValue? last = null;
+            DynValue last = fillValue;
             for (int i = 0; i < result.Count; i++)
             {
-                if (result[i].IsNull && last != null)
-                    result[i] = last;
-                else if (!result[i].IsNull)
-                    last = result[i];
+                if (result[i].IsNull) result[i] = last;
+                else last = result[i];
             }
         }
-        else if (strategyStr == "backward")
+        else if (strategy == "backward")
         {
-            DynValue? next = null;
+            DynValue next = fillValue;
             for (int i = result.Count - 1; i >= 0; i--)
             {
-                if (result[i].IsNull && next != null)
-                    result[i] = next;
-                else if (!result[i].IsNull)
-                    next = result[i];
+                if (result[i].IsNull) result[i] = next;
+                else next = result[i];
             }
+        }
+        else if (strategy == "mean")
+        {
+            double total = 0; int count = 0;
+            foreach (var item in result)
+            {
+                if (item.IsNull) continue;
+                var n = ToDouble(item);
+                if (n.HasValue) { total += n.Value; count++; }
+            }
+            var mean = count > 0 ? DynValue.Float(total / count) : DynValue.Float(0.0);
+            for (int i = 0; i < result.Count; i++)
+                if (result[i].IsNull) result[i] = mean;
         }
         else
         {
-            // Fill with literal value
             for (int i = 0; i < result.Count; i++)
-            {
-                if (result[i].IsNull)
-                    result[i] = args[1];
-            }
+                if (result[i].IsNull) result[i] = fillValue;
         }
 
         return DynValue.Array(result);

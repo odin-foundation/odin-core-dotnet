@@ -94,7 +94,7 @@ public class FinancialVerbTests
     [Fact]
     public void FormatInteger_Negative()
     {
-        Assert.Equal(S("-2"), Invoke("formatInteger", F(-2.3)));
+        Assert.Equal(S("-3"), Invoke("formatInteger", F(-2.3)));
     }
 
     [Fact]
@@ -1049,7 +1049,7 @@ public class FinancialVerbTests
     [Fact]
     public void Round_Negative()
     {
-        AssertNumeric(Invoke("round", F(-2.5)), -3.0, 1e-10);
+        AssertNumeric(Invoke("round", F(-2.5)), -2.0, 1e-10);
     }
 
     // =========================================================================
@@ -1113,19 +1113,19 @@ public class FinancialVerbTests
     [Fact]
     public void Add_NullArg()
     {
-        Assert.True(Invoke("add", Null(), I(5)).IsNull);
+        Assert.Equal(5L, Invoke("add", Null(), I(5)).AsInt64());
     }
 
     [Fact]
     public void Subtract_NullArg()
     {
-        Assert.True(Invoke("subtract", I(5), Null()).IsNull);
+        Assert.Equal(5L, Invoke("subtract", I(5), Null()).AsInt64());
     }
 
     [Fact]
     public void Multiply_NullArg()
     {
-        Assert.True(Invoke("multiply", Null(), Null()).IsNull);
+        Assert.Equal(0L, Invoke("multiply", Null(), Null()).AsInt64());
     }
 
     [Fact]
@@ -1137,13 +1137,13 @@ public class FinancialVerbTests
     [Fact]
     public void Floor_NullArg()
     {
-        Assert.True(Invoke("floor", Null()).IsNull);
+        Assert.Equal(0L, Invoke("floor", Null()).AsInt64());
     }
 
     [Fact]
     public void Ceil_NullArg()
     {
-        Assert.True(Invoke("ceil", Null()).IsNull);
+        Assert.Equal(0L, Invoke("ceil", Null()).AsInt64());
     }
 
     [Fact]
@@ -1179,25 +1179,25 @@ public class FinancialVerbTests
     [Fact]
     public void Negate_NullArg()
     {
-        Assert.True(Invoke("negate", Null()).IsNull);
+        Assert.Equal(0L, Invoke("negate", Null()).AsInt64());
     }
 
     [Fact]
     public void Sign_NullArg()
     {
-        Assert.True(Invoke("sign", Null()).IsNull);
+        Assert.Equal(0L, Invoke("sign", Null()).AsInt64());
     }
 
     [Fact]
     public void Trunc_NullArg()
     {
-        Assert.True(Invoke("trunc", Null()).IsNull);
+        Assert.Equal(0L, Invoke("trunc", Null()).AsInt64());
     }
 
     [Fact]
     public void Abs_NullArg()
     {
-        Assert.True(Invoke("abs", Null()).IsNull);
+        Assert.Equal(0L, Invoke("abs", Null()).AsInt64());
     }
 
     [Fact]

@@ -173,6 +173,8 @@ internal static class GeoVerbs
         var lon2 = ToDouble(args[3]);
         if (!lat1.HasValue || !lon1.HasValue || !lat2.HasValue || !lon2.HasValue)
             return DynValue.Null();
+        if (lat1.Value < -90 || lat1.Value > 90 || lat2.Value < -90 || lat2.Value > 90) return DynValue.Null();
+        if (lon1.Value < -180 || lon1.Value > 180 || lon2.Value < -180 || lon2.Value > 180) return DynValue.Null();
 
         double lat1Rad = lat1.Value * DegToRad;
         double lat2Rad = lat2.Value * DegToRad;
@@ -186,7 +188,7 @@ internal static class GeoVerbs
         // Normalize to 0-360
         bearing = (bearing + 360.0) % 360.0;
 
-        return NumericResult(bearing);
+        return DynValue.Float(bearing);
     }
 
     /// <summary>

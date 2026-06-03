@@ -355,9 +355,11 @@ public class LogicVerbTests
     // =========================================================================
 
     [Fact]
-    public void IsDate_Valid() => Assert.True(Invoke("isDate", S("2024-01-15")).AsBool()!.Value);
+    public void IsDate_Valid() => Assert.True(Invoke("isDate", DynValue.Date("2024-01-15")).AsBool()!.Value);
     [Fact]
-    public void IsDate_Timestamp() => Assert.True(Invoke("isDate", S("2024-01-15T10:30:00")).AsBool()!.Value);
+    public void IsDate_StringIsNotDate() => Assert.False(Invoke("isDate", S("2024-01-15")).AsBool()!.Value);
+    [Fact]
+    public void IsDate_Timestamp() => Assert.True(Invoke("isDate", DynValue.Timestamp("2024-01-15T10:30:00")).AsBool()!.Value);
     [Fact]
     public void IsDate_Invalid() => Assert.False(Invoke("isDate", S("not-a-date")).AsBool()!.Value);
     [Fact]
@@ -435,18 +437,15 @@ public class LogicVerbTests
 
     [Fact]
     public void Assert_Falsy()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("assert", B(false)));
+        => Assert.True(Invoke("assert", B(false)).IsNull);
 
     [Fact]
     public void Assert_FalsyWithMessage()
-    {
-        var ex = Assert.Throws<InvalidOperationException>(() => Invoke("assert", B(false), S("custom message")));
-        Assert.Contains("custom message", ex.Message);
-    }
+        => Assert.True(Invoke("assert", B(false), S("custom message")).IsNull);
 
     [Fact]
     public void Assert_NoArgs()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("assert"));
+        => Assert.True(Invoke("assert").IsNull);
 
     [Fact]
     public void Assert_TruthyString()
@@ -457,11 +456,11 @@ public class LogicVerbTests
 
     [Fact]
     public void Assert_FalsyNull()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("assert", Null()));
+        => Assert.True(Invoke("assert", Null()).IsNull);
 
     [Fact]
     public void Assert_FalsyEmptyString()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("assert", S("")));
+        => Assert.True(Invoke("assert", S("")).IsNull);
 
     // =========================================================================
     // ifElse
@@ -613,15 +612,15 @@ public class LogicVerbTests
 
     [Fact]
     public void CoerceNumber_FromNull()
-        => Assert.True(Invoke("coerceNumber", Null()).IsNull);
+        => Assert.Equal(0L, Invoke("coerceNumber", Null()).AsInt64());
 
     [Fact]
     public void CoerceNumber_InvalidString()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceNumber", S("abc")));
+        => Assert.Equal(0L, Invoke("coerceNumber", S("abc")).AsInt64());
 
     [Fact]
     public void CoerceNumber_NoArgs()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceNumber"));
+        => Assert.True(Invoke("coerceNumber").IsNull);
 
     // =========================================================================
     // coerceInteger
@@ -653,15 +652,15 @@ public class LogicVerbTests
 
     [Fact]
     public void CoerceInteger_FromNull()
-        => Assert.True(Invoke("coerceInteger", Null()).IsNull);
+        => Assert.Equal(0L, Invoke("coerceInteger", Null()).AsInt64());
 
     [Fact]
     public void CoerceInteger_InvalidString()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceInteger", S("abc")));
+        => Assert.Equal(0L, Invoke("coerceInteger", S("abc")).AsInt64());
 
     [Fact]
     public void CoerceInteger_NoArgs()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceInteger"));
+        => Assert.True(Invoke("coerceInteger").IsNull);
 
     // =========================================================================
     // coerceBoolean
@@ -695,7 +694,7 @@ public class LogicVerbTests
     public void CoerceBoolean_FromStringOff() => Assert.False(Invoke("coerceBoolean", S("off")).AsBool()!.Value);
     [Fact]
     public void CoerceBoolean_NoArgs()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceBoolean"));
+        => Assert.True(Invoke("coerceBoolean").IsNull);
 
     // =========================================================================
     // coerceDate
@@ -711,7 +710,7 @@ public class LogicVerbTests
 
     [Fact]
     public void CoerceDate_Invalid()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceDate", S("not-a-date")));
+        => Assert.True(Invoke("coerceDate", S("not-a-date")).IsNull);
 
     [Fact]
     public void CoerceDate_Null()
@@ -719,7 +718,7 @@ public class LogicVerbTests
 
     [Fact]
     public void CoerceDate_NoArgs()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceDate"));
+        => Assert.True(Invoke("coerceDate").IsNull);
 
     // =========================================================================
     // coerceTimestamp
@@ -864,11 +863,11 @@ public class LogicVerbTests
 
     [Fact]
     public void ToObject_NoArgs()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("toObject"));
+        => Assert.True(Invoke("toObject").IsNull);
 
     [Fact]
     public void ToObject_InvalidPairs()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("toObject", Arr(I(1), I(2))));
+        => Assert.True(Invoke("toObject", Arr(I(1), I(2))).IsNull);
 
     // =========================================================================
     // coalesce

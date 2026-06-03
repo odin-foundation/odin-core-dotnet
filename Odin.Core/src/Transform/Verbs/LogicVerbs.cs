@@ -339,17 +339,7 @@ internal static class LogicVerbs
     private static DynValue IsDate(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Bool(false);
-
-        if (args[0].Type == DynValueType.Date)
-            return DynValue.Bool(true);
-
-        if (args[0].Type == DynValueType.String)
-        {
-            var s = args[0].AsString()!;
-            return DynValue.Bool(s.Length >= 10 && CoercionVerbs.IsValidDatePrefix(s));
-        }
-
-        return DynValue.Bool(false);
+        return DynValue.Bool(args[0].Type == DynValueType.Date || args[0].Type == DynValueType.Timestamp);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -415,14 +405,10 @@ internal static class LogicVerbs
     /// </summary>
     private static DynValue Assert(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0)
-            throw new InvalidOperationException("assert: requires at least 1 argument");
-
+        if (args.Length == 0) return DynValue.Null();
         if (VerbHelpers.IsTruthy(args[0]))
             return args[0];
-
-        var message = args.Length >= 2 ? args[1].AsString() ?? "assertion failed" : "assertion failed";
-        throw new InvalidOperationException($"assert: {message}");
+        return DynValue.Null();
     }
 
     // ─────────────────────────────────────────────────────────────────────────

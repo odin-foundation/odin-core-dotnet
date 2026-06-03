@@ -297,7 +297,7 @@ internal static class StringVerbs
         string s = ToStr(args[0]);
         if (s.Length == 0) return DynValue.String("");
 
-        var parts = s.Split(new[] { ' ', '\t' }, StringSplitOptions.None);
+        var parts = System.Text.RegularExpressions.Regex.Split(s, @"\s+");
         var sb = new StringBuilder();
         for (int i = 0; i < parts.Length; i++)
         {
@@ -306,7 +306,7 @@ internal static class StringVerbs
             if (word.Length == 0) continue;
             sb.Append(char.ToUpperInvariant(word[0]));
             if (word.Length > 1)
-                sb.Append(word.Substring(1));
+                sb.Append(word.Substring(1).ToLowerInvariant());
         }
         return DynValue.String(sb.ToString());
     }
@@ -355,6 +355,7 @@ internal static class StringVerbs
         string s = ToStr(args[0]);
         string pattern = ToStr(args[1]);
         string replacement = ToStr(args[2]);
+        if (pattern.Length > 256 || s.Length > 100000) return DynValue.Null();
         try
         {
             var regex = CreateRegex(pattern);
@@ -362,8 +363,7 @@ internal static class StringVerbs
         }
         catch (Exception)
         {
-            // If regex is invalid, return original string
-            return DynValue.String(s);
+            return DynValue.Null();
         }
     }
 
@@ -510,7 +510,8 @@ internal static class StringVerbs
         if (args[0].IsNull) return DynValue.Null();
         string s = ToStr(args[0]);
         int count = ToInt(args[1]);
-        if (count <= 0) return DynValue.String("");
+        if (count < 0) return DynValue.Null();
+        if (count == 0) return DynValue.String("");
         var sb = new StringBuilder(s.Length * count);
         for (int i = 0; i < count; i++)
             sb.Append(s);
@@ -632,29 +633,16 @@ internal static class StringVerbs
     {
         if (args.Length < 1) return DynValue.Null();
         if (args[0].IsNull) return DynValue.Null();
-        string s = ToStr(args[0]).ToLowerInvariant();
-        // Strip accents first
-        s = RemoveAccents(s);
-        // Replace non-alphanumeric with hyphens
-        var sb = new StringBuilder(s.Length);
-        bool lastWasHyphen = false;
-        for (int i = 0; i < s.Length; i++)
-        {
-            char c = s[i];
-            if (char.IsLetterOrDigit(c))
-            {
-                sb.Append(c);
-                lastWasHyphen = false;
-            }
-            else if (!lastWasHyphen && sb.Length > 0)
-            {
-                sb.Append('-');
-                lastWasHyphen = true;
-            }
-        }
-        // Trim trailing hyphen
-        string result = sb.ToString().TrimEnd('-');
-        return DynValue.String(result);
+        string s = ToStr(args[0]);
+        if (s.Length == 0) return DynValue.String("");
+        s = s.ToLowerInvariant();
+        // Drop everything that is not ASCII word char, whitespace, or hyphen.
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"[^a-z0-9_\s-]", "");
+        // Whitespace and underscores become hyphens.
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"[\s_]+", "-");
+        // Collapse repeated hyphens.
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"-+", "-");
+        return DynValue.String(s.Trim('-'));
     }
 
     private static DynValue Match(DynValue[] args, VerbContext ctx)
@@ -742,7 +730,7 @@ internal static class StringVerbs
         string s = ToStr(args[0]);
         string delimiter = ToStr(args[1]);
         int idx = s.IndexOf(delimiter, StringComparison.Ordinal);
-        if (idx < 0) return DynValue.String(s);
+        if (idx < 0) return DynValue.String("");
         return DynValue.String(s.Substring(idx + delimiter.Length));
     }
 
@@ -873,27 +861,23 @@ internal static class StringVerbs
         if (args.Length < 1) return DynValue.Array(new List<DynValue>());
         if (args[0].IsNull) return DynValue.Array(new List<DynValue>());
         string s = ToStr(args[0]);
-        // Split on whitespace into word tokens
+        if (s.Length == 0) return DynValue.Array(new List<DynValue>());
+
+        string delim = args.Length >= 2 ? ToStr(args[1]) : "";
         var items = new List<DynValue>();
-        var current = new StringBuilder();
-        for (int i = 0; i < s.Length; i++)
+        if (delim.Length == 0)
         {
-            char c = s[i];
-            if (char.IsWhiteSpace(c))
+            foreach (var t in System.Text.RegularExpressions.Regex.Split(s, @"\s+"))
+                if (t.Length > 0) items.Add(DynValue.String(t));
+        }
+        else
+        {
+            foreach (var part in s.Split(new[] { delim }, StringSplitOptions.None))
             {
-                if (current.Length > 0)
-                {
-                    items.Add(DynValue.String(current.ToString()));
-                    current.Clear();
-                }
-            }
-            else
-            {
-                current.Append(c);
+                var t = part.Trim();
+                if (t.Length > 0) items.Add(DynValue.String(t));
             }
         }
-        if (current.Length > 0)
-            items.Add(DynValue.String(current.ToString()));
         return DynValue.Array(items);
     }
 

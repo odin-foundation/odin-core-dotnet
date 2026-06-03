@@ -1,5 +1,6 @@
 #nullable enable
 
+using System;
 using System.Globalization;
 using Odin.Core.Types;
 
@@ -59,6 +60,54 @@ internal static class VerbHelpers
             default:
                 return null;
         }
+    }
+
+    /// <summary>
+    /// Coerces a DynValue to a double, treating null and unparseable values as 0.
+    /// </summary>
+    public static double ToNumber(DynValue val)
+    {
+        var n = CoerceNum(val);
+        return n ?? 0.0;
+    }
+
+    /// <summary>
+    /// Coerces a DynValue to a boolean using strict string semantics
+    /// (true/yes/y/1 are true; everything else false).
+    /// </summary>
+    public static bool ToBoolean(DynValue val)
+    {
+        switch (val.Type)
+        {
+            case DynValueType.String:
+                var s = (val.AsString() ?? "").Trim().ToLowerInvariant();
+                return s == "true" || s == "yes" || s == "y" || s == "1";
+            case DynValueType.Null:
+                return false;
+            case DynValueType.Integer:
+                return val.AsInt64()!.Value != 0;
+            case DynValueType.Float:
+            case DynValueType.Currency:
+            case DynValueType.Percent:
+                return val.AsDouble()!.Value != 0.0;
+            case DynValueType.Bool:
+                return val.AsBool()!.Value;
+            default:
+                return IsTruthy(val);
+        }
+    }
+
+    /// <summary>
+    /// Returns an Integer DynValue if the value is whole, Float otherwise.
+    /// </summary>
+    public static DynValue NumericResult(double v)
+    {
+        if (double.IsNaN(v) || double.IsInfinity(v))
+            return DynValue.Float(v);
+        var rounded = Math.Round(v);
+        if (Math.Abs(v - rounded) < 1e-10 && Math.Abs(rounded) < (double)long.MaxValue)
+            return DynValue.Integer((long)rounded);
+        return DynValue.Float(v);
     }
 
     /// <summary>

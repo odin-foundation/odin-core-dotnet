@@ -140,10 +140,16 @@ internal static class EncodingVerbs
     // JSON serialization helpers
     // ─────────────────────────────────────────────────────────────────────────
 
+    private static readonly JsonSerializerOptions RelaxedJson = new JsonSerializerOptions
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
     private static string SerializeDynValue(DynValue v)
     {
         using var stream = new System.IO.MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream))
+        var opts = new JsonWriterOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+        using (var writer = new Utf8JsonWriter(stream, opts))
         {
             WriteDynValue(writer, v);
         }
@@ -222,9 +228,13 @@ internal static class EncodingVerbs
         if (args.Length == 0) return DynValue.Null();
         var s = CoerceStr(args[0]);
         if (s == null) return DynValue.Null();
+        // Accept URL-safe alphabet and missing padding.
+        var norm = s.Replace('-', '+').Replace('_', '/');
+        int pad = (4 - norm.Length % 4) % 4;
+        if (pad > 0) norm += new string('=', pad);
         try
         {
-            var bytes = Convert.FromBase64String(s);
+            var bytes = Convert.FromBase64String(norm);
             return DynValue.String(Encoding.UTF8.GetString(bytes));
         }
         catch (FormatException)
@@ -252,8 +262,18 @@ internal static class EncodingVerbs
         if (args.Length == 0) return DynValue.Null();
         var s = CoerceStr(args[0]);
         if (s == null) return DynValue.Null();
+        // Reject malformed percent-encoding (% not followed by two hex digits).
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] != '%') continue;
+            if (i + 2 >= s.Length) return DynValue.Null();
+            if (!IsHex(s[i + 1]) || !IsHex(s[i + 2])) return DynValue.Null();
+        }
         return DynValue.String(Uri.UnescapeDataString(s));
     }
+
+    private static bool IsHex(char c)
+        => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 
     /// <summary>
     /// Serializes a DynValue to its JSON string representation.
@@ -261,8 +281,14 @@ internal static class EncodingVerbs
     private static DynValue JsonEncode(DynValue[] args, VerbContext ctx)
     {
         if (args.Length == 0) return DynValue.Null();
-        if (args[0].IsNull) return DynValue.String("null");
-        return DynValue.String(SerializeDynValue(args[0]));
+        if (args[0].IsNull) return DynValue.Null();
+        var v = args[0];
+        if (v.Type == DynValueType.Object || v.Type == DynValueType.Array)
+            return DynValue.String(SerializeDynValue(v));
+        // For other types, JSON-escape the string and strip the surrounding quotes.
+        var s = VerbHelpers.CoerceStr(v);
+        var encoded = JsonSerializer.Serialize(s, RelaxedJson);
+        return DynValue.String(encoded.Substring(1, encoded.Length - 2));
     }
 
     /// <summary>
@@ -273,10 +299,22 @@ internal static class EncodingVerbs
         if (args.Length == 0) return DynValue.Null();
         var s = CoerceStr(args[0]);
         if (s == null) return DynValue.Null();
+        var trimmed = s.TrimStart();
+        if (trimmed.StartsWith("{", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(s);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object || doc.RootElement.ValueKind == JsonValueKind.Array)
+                    return DynValue.FromJsonElement(doc.RootElement);
+            }
+            catch (JsonException) { }
+        }
+        // Unescape as a JSON string.
         try
         {
-            using var doc = JsonDocument.Parse(s);
-            return DynValue.FromJsonElement(doc.RootElement);
+            using var doc = JsonDocument.Parse("\"" + s + "\"");
+            return DynValue.String(doc.RootElement.GetString() ?? "");
         }
         catch (JsonException)
         {
@@ -304,6 +342,12 @@ internal static class EncodingVerbs
         if (args.Length == 0) return DynValue.Null();
         var s = CoerceStr(args[0]);
         if (s == null) return DynValue.Null();
+        if (s.Length % 2 != 0) return DynValue.Null();
+        foreach (var c in s)
+        {
+            bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex) return DynValue.Null();
+        }
         try
         {
             var bytes = HexToBytes(s);

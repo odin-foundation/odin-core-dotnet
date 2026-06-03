@@ -789,13 +789,13 @@ public class CollectionVerbTests
     }
 
     [Fact]
-    public void Zip_UnequalPadsWithNull()
+    public void Zip_UnequalTruncatesToShortest()
     {
         var a = Arr(I(1), I(2), I(3));
         var b = Arr(S("a"));
         var result = Invoke("zip", a, b);
-        // .NET implementation pads with null for shorter arrays
-        Assert.Equal(3, result.AsArray()!.Count);
+        // zip truncates to the shortest array length
+        Assert.Single(result.AsArray()!);
     }
 
     [Fact]
@@ -1375,7 +1375,8 @@ public class CollectionVerbTests
     [Fact]
     public void Has_WithNullValue()
     {
-        Assert.True(Invoke("has", Obj(("key", Null())), S("key")).AsBool());
+        // A key whose value is null is treated as absent.
+        Assert.False(Invoke("has", Obj(("key", Null())), S("key")).AsBool());
     }
 
     // =========================================================================
@@ -1922,7 +1923,7 @@ public class CollectionVerbTests
     [Fact]
     public void FillMissing_Forward()
     {
-        var result = Invoke("fillMissing", Arr(I(1), Null(), Null(), I(4)), S("forward"));
+        var result = Invoke("fillMissing", Arr(I(1), Null(), Null(), I(4)), Null(), S("forward"));
         Assert.Equal(1, result.AsArray()![0].AsInt64());
         Assert.Equal(1, result.AsArray()![1].AsInt64());
         Assert.Equal(1, result.AsArray()![2].AsInt64());
@@ -1932,7 +1933,7 @@ public class CollectionVerbTests
     [Fact]
     public void FillMissing_Backward()
     {
-        var result = Invoke("fillMissing", Arr(Null(), Null(), I(3), I(4)), S("backward"));
+        var result = Invoke("fillMissing", Arr(Null(), Null(), I(3), I(4)), Null(), S("backward"));
         Assert.Equal(3, result.AsArray()![0].AsInt64());
         Assert.Equal(3, result.AsArray()![1].AsInt64());
         Assert.Equal(3, result.AsArray()![2].AsInt64());

@@ -566,10 +566,10 @@ public class CollectionVerbExtendedTests
     }
 
     [Fact]
-    public void Zip_UnequalLengthPadsWithNull()
+    public void Zip_UnequalLengthTruncatesToShortest()
     {
         var result = Invoke("zip", Arr(I(1), I(2), I(3)), Arr(S("a")));
-        AssertArrayLength(result, 3);
+        AssertArrayLength(result, 1);
         var arr = result.AsArray()!;
         Assert.Equal(Arr(I(1), S("a")), arr[0]);
     }
@@ -1214,7 +1214,7 @@ public class CollectionVerbExtendedTests
     [Fact]
     public void Rank_Empty()
     {
-        Assert.Equal(Arr(), Invoke("rank", Arr()));
+        Assert.True(Invoke("rank", Arr()).IsNull);
     }
 
     // =========================================================================
@@ -1238,14 +1238,14 @@ public class CollectionVerbExtendedTests
     [Fact]
     public void FillMissing_ForwardStrategy()
     {
-        var result = Invoke("fillMissing", Arr(I(1), Null(), Null(), I(4), Null()), S("forward"));
+        var result = Invoke("fillMissing", Arr(I(1), Null(), Null(), I(4), Null()), Null(), S("forward"));
         Assert.Equal(Arr(I(1), I(1), I(1), I(4), I(4)), result);
     }
 
     [Fact]
     public void FillMissing_BackwardStrategy()
     {
-        var result = Invoke("fillMissing", Arr(Null(), Null(), I(3), Null(), I(5)), S("backward"));
+        var result = Invoke("fillMissing", Arr(Null(), Null(), I(3), Null(), I(5)), Null(), S("backward"));
         Assert.Equal(Arr(I(3), I(3), I(3), I(5), I(5)), result);
     }
 
@@ -1415,7 +1415,8 @@ public class CollectionVerbExtendedTests
     [Fact]
     public void Has_WithNullValue()
     {
-        Assert.Equal(B(true), Invoke("has", Obj(("key", Null())), S("key")));
+        // A key whose value is null is treated as absent.
+        Assert.Equal(B(false), Invoke("has", Obj(("key", Null())), S("key")));
     }
 
     [Fact]

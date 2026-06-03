@@ -209,7 +209,7 @@ internal static class NumericVerbs
         if (args.Length < 1) return DynValue.Null();
         var val = ToDouble(args[0]);
         if (!val.HasValue) return DynValue.Null();
-        long intVal = (long)val.Value;
+        long intVal = (long)Math.Floor(val.Value);
         return DynValue.String(intVal.ToString(CultureInfo.InvariantCulture));
     }
 
@@ -234,25 +234,19 @@ internal static class NumericVerbs
     private static DynValue Floor(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 1) return DynValue.Null();
-        var val = ToDouble(args[0]);
-        if (!val.HasValue) return DynValue.Null();
-        return NumericResult(Math.Floor(val.Value));
+        return NumericResult(Math.Floor(ToNum(args[0])));
     }
 
     private static DynValue Ceil(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 1) return DynValue.Null();
-        var val = ToDouble(args[0]);
-        if (!val.HasValue) return DynValue.Null();
-        return NumericResult(Math.Ceiling(val.Value));
+        return NumericResult(Math.Ceiling(ToNum(args[0])));
     }
 
     private static DynValue Negate(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 1) return DynValue.Null();
-        var val = ToDouble(args[0]);
-        if (!val.HasValue) return DynValue.Null();
-        return NumericResult(-val.Value);
+        return NumericResult(-ToNum(args[0]));
     }
 
     private static DynValue Switch(DynValue[] args, VerbContext ctx)
@@ -299,19 +293,16 @@ internal static class NumericVerbs
     private static DynValue Sign(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 1) return DynValue.Null();
-        var val = ToDouble(args[0]);
-        if (!val.HasValue) return DynValue.Null();
-        if (val.Value > 0) return DynValue.Integer(1);
-        if (val.Value < 0) return DynValue.Integer(-1);
+        var val = ToNum(args[0]);
+        if (val > 0) return DynValue.Integer(1);
+        if (val < 0) return DynValue.Integer(-1);
         return DynValue.Integer(0);
     }
 
     private static DynValue Trunc(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 1) return DynValue.Null();
-        var val = ToDouble(args[0]);
-        if (!val.HasValue) return DynValue.Null();
-        return NumericResult(Math.Truncate(val.Value));
+        return NumericResult(Math.Truncate(ToNum(args[0])));
     }
 
     private static DynValue RandomVerb(DynValue[] args, VerbContext ctx)
@@ -344,10 +335,11 @@ internal static class NumericVerbs
             var seedStr = args[2].AsString();
             if (min3.HasValue && max3.HasValue && seedStr != null)
             {
+                if (min3.Value > max3.Value) return DynValue.Null();
                 uint state = StringToSeed(seedStr);
                 double r = Mulberry32(ref state);
-                long lo = (long)min3.Value;
-                long hi = (long)max3.Value;
+                long lo = (long)Math.Floor(min3.Value);
+                long hi = (long)Math.Floor(max3.Value);
                 long result = lo + (long)Math.Floor(r * (hi - lo + 1));
                 return DynValue.Integer(result);
             }
@@ -451,7 +443,7 @@ internal static class NumericVerbs
     {
         if (args.Length < 1) return DynValue.Bool(false);
         var val = ToDouble(args[0]);
-        if (!val.HasValue) return DynValue.Bool(true);
+        if (!val.HasValue) return DynValue.Bool(false);
         return DynValue.Bool(double.IsNaN(val.Value));
     }
 
@@ -565,28 +557,19 @@ internal static class NumericVerbs
     private static DynValue Add(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var a = ToDouble(args[0]);
-        var b = ToDouble(args[1]);
-        if (!a.HasValue || !b.HasValue) return DynValue.Null();
-        return NumericResult(a.Value + b.Value);
+        return NumericResult(ToNum(args[0]) + ToNum(args[1]));
     }
 
     private static DynValue Subtract(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var a = ToDouble(args[0]);
-        var b = ToDouble(args[1]);
-        if (!a.HasValue || !b.HasValue) return DynValue.Null();
-        return NumericResult(a.Value - b.Value);
+        return NumericResult(ToNum(args[0]) - ToNum(args[1]));
     }
 
     private static DynValue Multiply(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var a = ToDouble(args[0]);
-        var b = ToDouble(args[1]);
-        if (!a.HasValue || !b.HasValue) return DynValue.Null();
-        return NumericResult(a.Value * b.Value);
+        return NumericResult(ToNum(args[0]) * ToNum(args[1]));
     }
 
     private static DynValue Divide(DynValue[] args, VerbContext ctx)
@@ -603,9 +586,7 @@ internal static class NumericVerbs
     private static DynValue Abs(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 1) return DynValue.Null();
-        var val = ToDouble(args[0]);
-        if (!val.HasValue) return DynValue.Null();
-        return NumericResult(Math.Abs(val.Value));
+        return NumericResult(Math.Abs(ToNum(args[0])));
     }
 
     private static DynValue Round(DynValue[] args, VerbContext ctx)
@@ -620,7 +601,7 @@ internal static class NumericVerbs
             if (d.HasValue) decimals = (int)d.Value;
         }
         if (decimals < 0) decimals = 0;
-        double rounded = Math.Round(val.Value, decimals, MidpointRounding.AwayFromZero);
+        double rounded = Math.Round(val.Value, decimals, MidpointRounding.ToEven);
         return NumericResult(rounded);
     }
 

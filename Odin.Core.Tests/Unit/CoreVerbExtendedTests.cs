@@ -195,7 +195,7 @@ public class CoreVerbExtendedTests
     [Fact] public void IsDate_Empty() => Assert.Equal(false, Invoke("isDate", S("")).AsBool());
     [Fact] public void IsDate_Bool() => Assert.Equal(false, Invoke("isDate", B(true)).AsBool());
     [Fact] public void IsDate_NoArgs() => Assert.Equal(false, Invoke("isDate").AsBool());
-    [Fact] public void IsDate_ValidDate() => Assert.Equal(true, Invoke("isDate", S("2024-01-15")).AsBool());
+    [Fact] public void IsDate_ValidDate() => Assert.Equal(false, Invoke("isDate", S("2024-01-15")).AsBool());
     [Fact] public void IsDate_DateType() => Assert.Equal(true, Invoke("isDate", DynValue.Date("2024-06-15")).AsBool());
 
     [Fact] public void TypeOf_Reference() => Assert.Equal("reference", Invoke("typeOf", DynValue.Reference("ref")).AsString());
@@ -223,12 +223,12 @@ public class CoreVerbExtendedTests
 
     [Fact] public void CoerceBoolean_N() => Assert.Equal(false, Invoke("coerceBoolean", S("n")).AsBool());
     [Fact] public void CoerceBoolean_Off() => Assert.Equal(false, Invoke("coerceBoolean", S("off")).AsBool());
-    [Fact] public void CoerceBoolean_On() => Assert.Equal(true, Invoke("coerceBoolean", S("on")).AsBool());
+    [Fact] public void CoerceBoolean_On() => Assert.Equal(false, Invoke("coerceBoolean", S("on")).AsBool());
     [Fact] public void CoerceBoolean_1String() => Assert.Equal(true, Invoke("coerceBoolean", S("1")).AsBool());
     [Fact] public void CoerceBoolean_FloatNonzero() => Assert.Equal(true, Invoke("coerceBoolean", F(0.5)).AsBool());
     [Fact] public void CoerceBoolean_FloatZero() => Assert.Equal(false, Invoke("coerceBoolean", F(0.0)).AsBool());
 
-    [Fact] public void CoerceInteger_NegativeFloat() => Assert.Equal(-3L, Invoke("coerceInteger", F(-3.9)).AsInt64());
+    [Fact] public void CoerceInteger_NegativeFloat() => Assert.Equal(-4L, Invoke("coerceInteger", F(-3.9)).AsInt64());
     [Fact] public void CoerceInteger_BoolFalse() => Assert.Equal(0L, Invoke("coerceInteger", B(false)).AsInt64());
     [Fact] public void CoerceInteger_LargeFloat() => Assert.Equal(10_000_000_000L, Invoke("coerceInteger", F(1e10)).AsInt64());
 
@@ -262,7 +262,7 @@ public class CoreVerbExtendedTests
     [Fact] public void TitleCase_EmptyString() => Assert.Equal("", Invoke("titleCase", S("")).AsString());
     [Fact] public void TitleCase_SingleWord() => Assert.Equal("Hello", Invoke("titleCase", S("hello")).AsString());
     [Fact] public void TitleCase_AlreadyTitled() => Assert.Equal("Hello World", Invoke("titleCase", S("Hello World")).AsString());
-    [Fact] public void TitleCase_AllUpper() => Assert.Equal("HELLO WORLD", Invoke("titleCase", S("HELLO WORLD")).AsString());
+    [Fact] public void TitleCase_AllUpper() => Assert.Equal("Hello World", Invoke("titleCase", S("HELLO WORLD")).AsString());
     [Fact] public void TitleCase_WithNumbers() => Assert.Equal("Hello 42 World", Invoke("titleCase", S("hello 42 world")).AsString());
     [Fact] public void TitleCase_Null() => Assert.True(Invoke("titleCase", Null()).IsNull);
 
@@ -506,7 +506,7 @@ public class CoreVerbExtendedTests
     [Fact] public void LeftOf_EmptyString() => Assert.Equal("", Invoke("leftOf", S(""), S("@")).AsString());
     [Fact] public void LeftOf_HappyPath() => Assert.Equal("user", Invoke("leftOf", S("user@example.com"), S("@")).AsString());
 
-    [Fact] public void RightOf_NoDelimiter() => Assert.Equal("hello", Invoke("rightOf", S("hello"), S("@")).AsString());
+    [Fact] public void RightOf_NoDelimiter() => Assert.Equal("", Invoke("rightOf", S("hello"), S("@")).AsString());
     [Fact] public void RightOf_AtEnd() => Assert.Equal("", Invoke("rightOf", S("hello@"), S("@")).AsString());
     [Fact] public void RightOf_Multiple() => Assert.Equal("b@c", Invoke("rightOf", S("a@b@c"), S("@")).AsString());
     [Fact] public void RightOf_EmptyString() => Assert.Equal("", Invoke("rightOf", S(""), S("@")).AsString());
@@ -629,9 +629,9 @@ public class CoreVerbExtendedTests
     // =========================================================================
 
     [Fact] public void Assert_TruthyInt() => Assert.Equal(1L, Invoke("assert", I(1)).AsInt64());
-    [Fact] public void Assert_FalsyZero_Throws() => Assert.Throws<InvalidOperationException>(() => Invoke("assert", I(0)));
+    [Fact] public void Assert_FalsyZero_Null() => Assert.True(Invoke("assert", I(0)).IsNull);
     [Fact] public void Assert_TruthyString() => Assert.Equal("yes", Invoke("assert", S("yes")).AsString());
-    [Fact] public void Assert_FalsyNull_Throws() => Assert.Throws<InvalidOperationException>(() => Invoke("assert", Null()));
+    [Fact] public void Assert_FalsyNull_Null() => Assert.True(Invoke("assert", Null()).IsNull);
 
     // =========================================================================
     // Coercion — tryCoerce / toArray / toObject / coerceDate / coerceTimestamp
@@ -689,8 +689,8 @@ public class CoreVerbExtendedTests
     }
 
     [Fact]
-    public void CoerceDate_InvalidString_Throws()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceDate", S("not-a-date")));
+    public void CoerceDate_InvalidString_Null()
+        => Assert.True(Invoke("coerceDate", S("not-a-date")).IsNull);
 
     [Fact]
     public void CoerceTimestamp_ValidTimestamp()

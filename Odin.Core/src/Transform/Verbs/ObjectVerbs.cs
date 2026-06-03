@@ -48,6 +48,33 @@ internal static class ObjectVerbs
     private static List<KeyValuePair<string, DynValue>>? AsObj(DynValue v)
         => v.AsObject() ?? v.ExtractObject();
 
+    // Walk a dot-separated path of object keys / array indices. Returns null on miss.
+    private static DynValue GetNested(DynValue root, string path)
+    {
+        DynValue current = root;
+        foreach (var part in path.Split('.'))
+        {
+            if (current.Type == DynValueType.Object)
+            {
+                var next = current.Get(part);
+                if (next == null) return DynValue.Null();
+                current = next;
+            }
+            else if (current.Type == DynValueType.Array)
+            {
+                if (int.TryParse(part, out var idx))
+                {
+                    var next = current.GetIndex(idx);
+                    if (next == null) return DynValue.Null();
+                    current = next;
+                }
+                else return DynValue.Null();
+            }
+            else return DynValue.Null();
+        }
+        return current;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Verb Implementations
     // ─────────────────────────────────────────────────────────────────────────
@@ -58,14 +85,9 @@ internal static class ObjectVerbs
     /// </summary>
     private static DynValue Keys(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Array(new List<DynValue>());
+        if (args.Length == 0) return DynValue.Null();
         var obj = args[0].AsObject();
-        if (obj == null)
-        {
-            // Try extracting from string-encoded object
-            obj = args[0].ExtractObject();
-            if (obj == null) return DynValue.Array(new List<DynValue>());
-        }
+        if (obj == null) return DynValue.Null();
 
         var result = new List<DynValue>();
         for (int i = 0; i < obj.Count; i++)
@@ -80,13 +102,9 @@ internal static class ObjectVerbs
     /// </summary>
     private static DynValue Values(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Array(new List<DynValue>());
+        if (args.Length == 0) return DynValue.Null();
         var obj = args[0].AsObject();
-        if (obj == null)
-        {
-            obj = args[0].ExtractObject();
-            if (obj == null) return DynValue.Array(new List<DynValue>());
-        }
+        if (obj == null) return DynValue.Null();
 
         var result = new List<DynValue>();
         for (int i = 0; i < obj.Count; i++)
@@ -101,13 +119,9 @@ internal static class ObjectVerbs
     /// </summary>
     private static DynValue Entries(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0) return DynValue.Array(new List<DynValue>());
+        if (args.Length == 0) return DynValue.Null();
         var obj = args[0].AsObject();
-        if (obj == null)
-        {
-            obj = args[0].ExtractObject();
-            if (obj == null) return DynValue.Array(new List<DynValue>());
-        }
+        if (obj == null) return DynValue.Null();
 
         var result = new List<DynValue>();
         for (int i = 0; i < obj.Count; i++)
@@ -129,23 +143,13 @@ internal static class ObjectVerbs
     private static DynValue Has(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Bool(false);
-        var obj = args[0].AsObject();
-        if (obj == null)
-        {
-            obj = args[0].ExtractObject();
-            if (obj == null) return DynValue.Bool(false);
-        }
+        if (args[0].Type != DynValueType.Object) return DynValue.Bool(false);
 
-        var key = args[1].AsString();
-        if (key == null) return DynValue.Bool(false);
+        var key = VerbHelpers.CoerceStr(args[1]);
+        if (key.Length == 0 || !IsSafeKey(key)) return DynValue.Bool(false);
 
-        for (int i = 0; i < obj.Count; i++)
-        {
-            if (obj[i].Key == key)
-                return DynValue.Bool(true);
-        }
-
-        return DynValue.Bool(false);
+        var result = GetNested(args[0], key);
+        return DynValue.Bool(!result.IsNull);
     }
 
     /// <summary>
@@ -155,23 +159,15 @@ internal static class ObjectVerbs
     private static DynValue Get(DynValue[] args, VerbContext ctx)
     {
         if (args.Length < 2) return DynValue.Null();
-        var key = args[1].AsString();
-        if (key == null) return DynValue.Null();
+        var fallback = args.Length >= 3 ? args[2] : DynValue.Null();
+        if (args[0].Type != DynValueType.Object) return fallback;
 
-        var result = args[0].Get(key);
-        if (result != null) return result;
+        var key = VerbHelpers.CoerceStr(args[1]);
+        if (key.Length == 0 || !IsSafeKey(key)) return fallback;
 
-        // Try extracting from string-encoded object
-        var obj = args[0].ExtractObject();
-        if (obj == null) return DynValue.Null();
-
-        for (int i = 0; i < obj.Count; i++)
-        {
-            if (obj[i].Key == key)
-                return obj[i].Value;
-        }
-
-        return DynValue.Null();
+        var result = GetNested(args[0], key);
+        if (result.IsNull) return fallback;
+        return result;
     }
 
     /// <summary>

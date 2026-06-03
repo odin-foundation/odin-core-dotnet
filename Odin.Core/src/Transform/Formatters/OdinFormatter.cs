@@ -169,52 +169,43 @@ namespace Odin.Core.Transform
 
             lastEmittedContext = fullPath;
 
-            // Pass 1: scalar assignments and pure leaf chains
+            // Pass 1: scalars, leaf chains, and arrays in declaration order.
             for (int i = 0; i < entries.Count; i++)
             {
                 var child = entries[i].Value;
                 string childFullPath = fullPath + "." + entries[i].Key;
+
                 if (child.Type == DynValueType.Object && IsPureLeafChain(child))
                 {
                     CollectLeafPathsInner(sb, entries[i].Key, child, childFullPath, modifiers);
                 }
-                else if (child.Type != DynValueType.Object && child.Type != DynValueType.Array)
-                {
-                    WriteAssignment(sb, entries[i].Key, child, childFullPath, modifiers);
-                }
-            }
-
-            // Pass 2: array sections
-            for (int i = 0; i < entries.Count; i++)
-            {
-                var child = entries[i].Value;
-                if (child.Type == DynValueType.Array)
+                else if (child.Type == DynValueType.Array)
                 {
                     string arrParent = lastEmittedContext == fullPath ? fullPath : null!;
                     WriteArraySectionSmart(sb, entries[i].Key, arrParent, child.AsArray()!, modifiers);
                     lastEmittedContext = fullPath;
                 }
+                else if (child.Type != DynValueType.Object)
+                {
+                    WriteAssignment(sb, entries[i].Key, child, childFullPath, modifiers);
+                }
             }
 
-            // Pass 3: object subsections (non-leaf-chain)
-            // Children of relative sections must use absolute paths (no nested relative)
+            // Pass 2: object subsections (non-leaf-chain), deferred to the end.
             for (int i = 0; i < entries.Count; i++)
             {
                 var child = entries[i].Value;
-                if (child.Type == DynValueType.Object && (child.AsObject()?.Count ?? 0) == 0)
-                    continue; // empty objects produce no section
-                if (child.Type == DynValueType.Object && !IsPureLeafChain(child))
-                {
-                    string childFullPath = fullPath + "." + entries[i].Key;
-                    string childDisplay;
-                    if (!isRelative && !insideRelative && lastEmittedContext == fullPath)
-                        childDisplay = "." + entries[i].Key;
-                    else
-                        childDisplay = childFullPath;
-                    WriteSection(sb, childFullPath, childDisplay, fullPath, child, modifiers, ref lastEmittedContext, isRelative || insideRelative);
-                    // Reset context to parent so next sibling can also use relative notation
-                    lastEmittedContext = fullPath;
-                }
+                if (child.Type != DynValueType.Object || IsPureLeafChain(child)) continue;
+                if ((child.AsObject()?.Count ?? 0) == 0) continue; // empty objects produce no section
+
+                string childFullPath = fullPath + "." + entries[i].Key;
+                string childDisplay;
+                if (!isRelative && !insideRelative && lastEmittedContext == fullPath)
+                    childDisplay = "." + entries[i].Key;
+                else
+                    childDisplay = childFullPath;
+                WriteSection(sb, childFullPath, childDisplay, fullPath, child, modifiers, ref lastEmittedContext, isRelative || insideRelative);
+                lastEmittedContext = fullPath;
             }
         }
 

@@ -574,11 +574,11 @@ public class CoreVerbTests
 
     [Fact]
     public void CoerceNumber_Null()
-        => Assert.True(Invoke("coerceNumber", DynValue.Null()).IsNull);
+        => Assert.Equal(0L, Invoke("coerceNumber", DynValue.Null()).AsInt64());
 
     [Fact]
-    public void CoerceNumber_InvalidString_Throws()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceNumber", DynValue.String("abc")));
+    public void CoerceNumber_InvalidString_Zero()
+        => Assert.Equal(0L, Invoke("coerceNumber", DynValue.String("abc")).AsInt64());
 
     // ─────────────────────────────────────────────────────────────────
     // coerceInteger
@@ -602,11 +602,11 @@ public class CoreVerbTests
 
     [Fact]
     public void CoerceInteger_Null()
-        => Assert.True(Invoke("coerceInteger", DynValue.Null()).IsNull);
+        => Assert.Equal(0L, Invoke("coerceInteger", DynValue.Null()).AsInt64());
 
     [Fact]
-    public void CoerceInteger_InvalidString_Throws()
-        => Assert.Throws<InvalidOperationException>(() => Invoke("coerceInteger", DynValue.String("abc")));
+    public void CoerceInteger_InvalidString_Zero()
+        => Assert.Equal(0L, Invoke("coerceInteger", DynValue.String("abc")).AsInt64());
 
     // ─────────────────────────────────────────────────────────────────
     // coerceBoolean
@@ -698,7 +698,7 @@ public class CoreVerbTests
     public void IsNaN_Number() => Assert.Equal(false, Invoke("isNaN", DynValue.Float(42.0)).AsBool());
 
     [Fact]
-    public void IsNaN_String() => Assert.Equal(true, Invoke("isNaN", DynValue.String("abc")).AsBool());
+    public void IsNaN_String() => Assert.Equal(false, Invoke("isNaN", DynValue.String("abc")).AsBool());
 
     // ─────────────────────────────────────────────────────────────────
     // Unknown verb throws

@@ -730,11 +730,11 @@ public class NumericVerbExtendedTests
 
     [Fact]
     public void Floor_NullInput()
-        => Assert.True(Invoke("floor", Null()).IsNull);
+        => Assert.Equal(0L, Invoke("floor", Null()).AsInt64());
 
     [Fact]
     public void Ceil_NullInput()
-        => Assert.True(Invoke("ceil", Null()).IsNull);
+        => Assert.Equal(0L, Invoke("ceil", Null()).AsInt64());
 
     // =========================================================================
     // 20. DATETIME: FORMAT_DATE / FORMAT_TIME
@@ -943,7 +943,7 @@ public class NumericVerbExtendedTests
 
     [Fact]
     public void DayOfWeek_Sunday()
-        => AssertNumeric(Invoke("dayOfWeek", S("2024-01-07")), 0.0, 1e-10);
+        => AssertNumeric(Invoke("dayOfWeek", S("2024-01-07")), 7.0, 1e-10);
 
     [Fact]
     public void DayOfWeek_Saturday()
@@ -963,7 +963,8 @@ public class NumericVerbExtendedTests
         var result = Invoke("weekOfYear", S("2024-12-31"));
         var v = result.AsDouble() ?? (double?)result.AsInt64();
         Assert.NotNull(v);
-        Assert.True(v.Value >= 52 && v.Value <= 53, $"week={v.Value}");
+        // ISO 8601: 2024-12-31 falls in week 1 of 2025.
+        Assert.Equal(1.0, v.Value);
     }
 
     [Fact]
@@ -1076,7 +1077,7 @@ public class NumericVerbExtendedTests
 
     [Fact]
     public void DaysBetween_ReversedOrder()
-        => AssertNumeric(Invoke("daysBetweenDates", S("2024-06-16"), S("2024-06-15")), 1.0, 1e-10);
+        => AssertNumeric(Invoke("daysBetweenDates", S("2024-06-16"), S("2024-06-15")), -1.0, 1e-10);
 
     [Fact]
     public void DaysBetween_LeapYear()

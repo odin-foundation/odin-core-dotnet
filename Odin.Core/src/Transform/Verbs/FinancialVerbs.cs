@@ -138,11 +138,16 @@ internal static class FinancialVerbs
     /// <summary>Logarithm: log(value, base). Two args => Math.Log(args[0], args[1]).</summary>
     private static DynValue Log(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length < 2) return DynValue.Null();
-        var val = ToDouble(args[0]);
-        var b = ToDouble(args[1]);
-        if (!val.HasValue || !b.HasValue) return DynValue.Null();
-        return NumericResult(Math.Log(val.Value, b.Value));
+        if (args.Length < 1) return DynValue.Null();
+        double n = VerbHelpers.ToNumber(args[0]);
+        if (n <= 0) return DynValue.Null();
+        if (args.Length >= 2)
+        {
+            double b = VerbHelpers.ToNumber(args[1]);
+            if (b <= 0 || b == 1) return DynValue.Null();
+            return VerbHelpers.NumericResult(Math.Log(n) / Math.Log(b));
+        }
+        return VerbHelpers.NumericResult(Math.Log(n));
     }
 
     /// <summary>Natural logarithm (base e).</summary>
@@ -447,11 +452,10 @@ internal static class FinancialVerbs
         var p = ToDouble(args[1]);
         if (vals == null || vals.Count == 0 || !p.HasValue) return DynValue.Null();
 
-        vals.Sort();
         double pct = p.Value;
-        if (pct < 0) pct = 0;
-        if (pct > 100) pct = 100;
+        if (pct < 0 || pct > 100) return DynValue.Null();
 
+        vals.Sort();
         double rank = (pct / 100.0) * (vals.Count - 1);
         int lower = (int)Math.Floor(rank);
         int upper = (int)Math.Ceiling(rank);
@@ -677,8 +681,8 @@ internal static class FinancialVerbs
         var salvage = ToDouble(args[1]);
         var life = ToDouble(args[2]);
         if (!cost.HasValue || !salvage.HasValue || !life.HasValue) return DynValue.Null();
-        // ReSharper disable once CompareOfFloatsByEqualityOperator
-        if (life.Value == 0.0) return DynValue.Null();
+        if (life.Value <= 0) return DynValue.Null();
+        if (salvage.Value > cost.Value) return DynValue.Null();
         return NumericResult((cost.Value - salvage.Value) / life.Value);
     }
 

@@ -95,7 +95,7 @@ public class StringVerbTests
 
     [Fact]
     public void TitleCase_MultipleSpaces()
-        => Assert.Equal("Hello  World", Invoke("titleCase", S("hello  world")).AsString());
+        => Assert.Equal("Hello World", Invoke("titleCase", S("hello  world")).AsString());
 
     [Fact]
     public void TitleCase_NoArgs()
@@ -235,9 +235,9 @@ public class StringVerbTests
     [Fact]
     public void ReplaceRegex_InvalidPattern()
     {
-        // Invalid regex should return original string
+        // Invalid regex returns null
         var result = Invoke("replaceRegex", S("hello"), S("[invalid"), S("x"));
-        Assert.Equal("hello", result.AsString());
+        Assert.True(result.IsNull);
     }
 
     // =========================================================================
@@ -475,7 +475,7 @@ public class StringVerbTests
 
     [Fact]
     public void Repeat_NegativeCount()
-        => Assert.Equal("", Invoke("repeat", S("ab"), I(-1)).AsString());
+        => Assert.True(Invoke("repeat", S("ab"), I(-1)).IsNull);
 
     // =========================================================================
     // substring
@@ -667,7 +667,7 @@ public class StringVerbTests
 
     [Fact]
     public void Slugify_Accents()
-        => Assert.Equal("cafe-naive", Invoke("slugify", S("caf\u00e9 na\u00efve")).AsString());
+        => Assert.Equal("caf-nave", Invoke("slugify", S("caf\u00e9 na\u00efve")).AsString());
 
     [Fact]
     public void Slugify_MultipleSpaces()
@@ -787,7 +787,7 @@ public class StringVerbTests
 
     [Fact]
     public void RightOf_NotFound()
-        => Assert.Equal("hello", Invoke("rightOf", S("hello"), S("@")).AsString());
+        => Assert.Equal("", Invoke("rightOf", S("hello"), S("@")).AsString());
 
     [Fact]
     public void RightOf_Null()
@@ -1196,7 +1196,7 @@ public class StringVerbTests
 
     [Fact]
     public void JsonEncode_Null()
-        => Assert.Equal("null", Invoke("jsonEncode", Null()).AsString());
+        => Assert.True(Invoke("jsonEncode", Null()).IsNull);
 
     [Fact]
     public void JsonDecode_Null()
@@ -1204,7 +1204,11 @@ public class StringVerbTests
 
     [Fact]
     public void JsonDecode_InvalidJson()
-        => Assert.True(Invoke("jsonDecode", S("not json")).IsNull);
+        => Assert.True(Invoke("jsonDecode", S("bad\\xescape")).IsNull);
+
+    [Fact]
+    public void JsonDecode_BareStringUnescapes()
+        => Assert.Equal("not json", Invoke("jsonDecode", S("not json")).AsString());
 
     [Fact]
     public void JsonEncode_Array()
@@ -1215,7 +1219,7 @@ public class StringVerbTests
 
     [Fact]
     public void JsonEncode_String()
-        => Assert.Equal("\"hello\"", Invoke("jsonEncode", S("hello")).AsString());
+        => Assert.Equal("hello", Invoke("jsonEncode", S("hello")).AsString());
 
     [Fact]
     public void JsonEncode_Integer()

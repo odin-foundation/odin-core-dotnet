@@ -51,28 +51,8 @@ internal static class CoercionVerbs
     /// </summary>
     private static DynValue CoerceNumber(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0)
-            throw new InvalidOperationException("coerceNumber: requires 1 argument");
-
-        var val = args[0];
-        if (val.IsNull) return DynValue.Null();
-
-        switch (val.Type)
-        {
-            case DynValueType.Integer:
-                return DynValue.Float((double)val.AsInt64()!.Value);
-            case DynValueType.Float:
-                return val;
-            case DynValueType.String:
-                var s = val.AsString()!;
-                if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var num))
-                    return DynValue.Float(num);
-                throw new InvalidOperationException($"coerceNumber: cannot parse '{s}' as number");
-            case DynValueType.Bool:
-                return DynValue.Float(val.AsBool()!.Value ? 1.0 : 0.0);
-            default:
-                throw new InvalidOperationException("coerceNumber: unsupported type");
-        }
+        if (args.Length == 0) return DynValue.Null();
+        return VerbHelpers.NumericResult(VerbHelpers.ToNumber(args[0]));
     }
 
     /// <summary>
@@ -81,30 +61,8 @@ internal static class CoercionVerbs
     /// </summary>
     private static DynValue CoerceInteger(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0)
-            throw new InvalidOperationException("coerceInteger: requires 1 argument");
-
-        var val = args[0];
-        if (val.IsNull) return DynValue.Null();
-
-        switch (val.Type)
-        {
-            case DynValueType.Integer:
-                return val;
-            case DynValueType.Float:
-                return DynValue.Integer((long)val.AsDouble()!.Value);
-            case DynValueType.String:
-                var s = val.AsString()!;
-                if (long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var intVal))
-                    return DynValue.Integer(intVal);
-                if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var dblVal))
-                    return DynValue.Integer((long)dblVal);
-                throw new InvalidOperationException($"coerceInteger: cannot parse '{s}' as integer");
-            case DynValueType.Bool:
-                return DynValue.Integer(val.AsBool()!.Value ? 1L : 0L);
-            default:
-                throw new InvalidOperationException("coerceInteger: unsupported type");
-        }
+        if (args.Length == 0) return DynValue.Null();
+        return DynValue.Integer((long)Math.Floor(VerbHelpers.ToNumber(args[0])));
     }
 
     /// <summary>
@@ -114,27 +72,8 @@ internal static class CoercionVerbs
     /// </summary>
     private static DynValue CoerceBoolean(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0)
-            throw new InvalidOperationException("coerceBoolean: requires 1 argument");
-
-        var val = args[0];
-        if (val.IsNull) return DynValue.Bool(false);
-
-        switch (val.Type)
-        {
-            case DynValueType.Bool:
-                return val;
-            case DynValueType.String:
-                var s = val.AsString()!.Trim().ToLowerInvariant();
-                bool isFalsy = s == "" || s == "false" || s == "0" || s == "no" || s == "n" || s == "off";
-                return DynValue.Bool(!isFalsy);
-            case DynValueType.Integer:
-                return DynValue.Bool(val.AsInt64()!.Value != 0);
-            case DynValueType.Float:
-                return DynValue.Bool(val.AsDouble()!.Value != 0.0);
-            default:
-                throw new InvalidOperationException("coerceBoolean: unsupported type");
-        }
+        if (args.Length == 0) return DynValue.Null();
+        return DynValue.Bool(VerbHelpers.ToBoolean(args[0]));
     }
 
     /// <summary>
@@ -143,38 +82,71 @@ internal static class CoercionVerbs
     /// </summary>
     private static DynValue CoerceDate(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0)
-            throw new InvalidOperationException("coerceDate: requires 1 argument");
+        if (args.Length == 0) return DynValue.Null();
 
         var val = args[0];
         if (val.IsNull) return DynValue.Null();
 
-        switch (val.Type)
+        if (val.Type == DynValueType.Date) return val;
+        if (val.Type == DynValueType.Timestamp)
         {
-            case DynValueType.String:
-            case DynValueType.Date:
-            case DynValueType.Timestamp:
-                var s = val.Type == DynValueType.String ? val.AsString()! : val.AsString()!;
-                if (s.Length >= 10 && IsValidDatePrefix(s))
-                {
-                    var datePart = s.Substring(0, 10);
-                    if (int.TryParse(datePart.Substring(5, 2), out var month)
-                        && int.TryParse(datePart.Substring(8, 2), out var day)
-                        && month >= 1 && month <= 12 && day >= 1 && day <= 31)
-                    {
-                        return DynValue.Date(datePart);
-                    }
-                }
-                throw new InvalidOperationException($"coerceDate: '{s}' is not a valid date");
-
-            case DynValueType.Integer:
-                var secs = val.AsInt64()!.Value;
-                var dt = DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime;
-                return DynValue.Date(dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-
-            default:
-                throw new InvalidOperationException("coerceDate: expected string argument");
+            var ts = val.AsString() ?? "";
+            int ti = ts.IndexOf('T');
+            if (ti >= 0) ts = ts.Substring(0, ti);
+            return DynValue.Date(ts);
         }
+
+        var s = VerbHelpers.CoerceStr(val);
+        if (s.Length == 0) return DynValue.Null();
+
+        // ISO yyyy-MM-dd prefix
+        if (IsValidDatePrefix(s))
+            return DynValue.Date(s.Substring(0, 10));
+
+        // Compact YYYYMMDD
+        var compact = System.Text.RegularExpressions.Regex.Match(s, @"^(\d{4})(\d{2})(\d{2})$");
+        if (compact.Success)
+        {
+            int y = int.Parse(compact.Groups[1].Value, CultureInfo.InvariantCulture);
+            int mo = int.Parse(compact.Groups[2].Value, CultureInfo.InvariantCulture);
+            int d = int.Parse(compact.Groups[3].Value, CultureInfo.InvariantCulture);
+            return ValidYmd(y, mo, d) ? DynValue.Date($"{y:D4}-{mo:D2}-{d:D2}") : DynValue.Null();
+        }
+
+        // Slash MM/DD/YYYY (US) or DD/MM/YYYY when first > 12
+        var slash = System.Text.RegularExpressions.Regex.Match(s, @"^(\d{1,2})/(\d{1,2})/(\d{4})$");
+        if (slash.Success)
+        {
+            int first = int.Parse(slash.Groups[1].Value, CultureInfo.InvariantCulture);
+            int second = int.Parse(slash.Groups[2].Value, CultureInfo.InvariantCulture);
+            int y = int.Parse(slash.Groups[3].Value, CultureInfo.InvariantCulture);
+            int mo, d;
+            if (first > 12) { d = first; mo = second; }
+            else { mo = first; d = second; }
+            return ValidYmd(y, mo, d) ? DynValue.Date($"{y:D4}-{mo:D2}-{d:D2}") : DynValue.Null();
+        }
+
+        // Epoch seconds / millis
+        if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var epoch))
+        {
+            try
+            {
+                const double threshold = 100_000_000_000d;
+                long ms = Math.Abs(epoch) < threshold ? (long)(epoch * 1000) : (long)epoch;
+                var dt = DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime;
+                return DynValue.Date(dt.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+            }
+            catch { return DynValue.Null(); }
+        }
+
+        return DynValue.Null();
+    }
+
+    private static bool ValidYmd(int y, int mo, int d)
+    {
+        if (mo < 1 || mo > 12 || d < 1) return false;
+        if (y < 1 || y > 9999) return false;
+        return d <= DateTime.DaysInMonth(y, mo);
     }
 
     /// <summary>
@@ -276,40 +248,40 @@ internal static class CoercionVerbs
     /// </summary>
     private static DynValue ToObject(DynValue[] args, VerbContext ctx)
     {
-        if (args.Length == 0)
-            throw new InvalidOperationException("toObject: requires 1 argument");
+        if (args.Length == 0) return DynValue.Null();
 
         var val = args[0];
         if (val.IsNull) return DynValue.Null();
+        if (val.Type == DynValueType.Object) return val;
+        if (val.Type != DynValueType.Array) return DynValue.Null();
 
-        if (val.Type == DynValueType.Object)
-            return val;
-
-        if (val.Type == DynValueType.Array)
+        var arr = val.AsArray()!;
+        var entries = new List<KeyValuePair<string, DynValue>>();
+        var index = new Dictionary<string, int>();
+        foreach (var item in arr)
         {
-            var arr = val.AsArray()!;
-            var entries = new List<KeyValuePair<string, DynValue>>();
-            for (int i = 0; i < arr.Count; i++)
+            if (item.Type == DynValueType.Array)
             {
-                var item = arr[i];
-                var pair = item.AsArray();
-                if (pair == null || pair.Count < 2)
-                    throw new InvalidOperationException("toObject: array elements must be [key, value] pairs");
-
-                string key;
-                if (pair[0].Type == DynValueType.String)
-                    key = pair[0].AsString()!;
-                else if (pair[0].Type == DynValueType.Integer)
-                    key = pair[0].AsInt64()!.Value.ToString(CultureInfo.InvariantCulture);
-                else
-                    key = VerbHelpers.CoerceStr(pair[0]);
-
-                entries.Add(new KeyValuePair<string, DynValue>(key, pair[1]));
+                var pair = item.AsArray()!;
+                if (pair.Count < 2) continue;
+                var key = VerbHelpers.CoerceStr(pair[0]);
+                if (index.TryGetValue(key, out var at))
+                    entries[at] = new KeyValuePair<string, DynValue>(key, pair[1]);
+                else { index[key] = entries.Count; entries.Add(new KeyValuePair<string, DynValue>(key, pair[1])); }
             }
-            return DynValue.Object(entries);
+            else if (item.Type == DynValueType.Object)
+            {
+                var keyV = item.Get("key");
+                if (keyV == null) continue;
+                var key = VerbHelpers.CoerceStr(keyV);
+                var valV = item.Get("value") ?? DynValue.Null();
+                if (index.TryGetValue(key, out var at))
+                    entries[at] = new KeyValuePair<string, DynValue>(key, valV);
+                else { index[key] = entries.Count; entries.Add(new KeyValuePair<string, DynValue>(key, valV)); }
+            }
         }
-
-        throw new InvalidOperationException("toObject: expected array of [key, value] pairs");
+        if (entries.Count == 0) return DynValue.Null();
+        return DynValue.Object(entries);
     }
 
     /// <summary>

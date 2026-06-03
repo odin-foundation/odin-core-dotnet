@@ -591,7 +591,7 @@ public class StringVerbExtendedTests
 
     [Fact]
     public void RightOf_NoDelimiter()
-        => Assert.Equal("hello", Invoke("rightOf", S("hello"), S("@")).AsString());
+        => Assert.Equal("", Invoke("rightOf", S("hello"), S("@")).AsString());
 
     [Fact]
     public void RightOf_AtEnd()
@@ -917,7 +917,7 @@ public class StringVerbExtendedTests
 
     [Fact]
     public void JsonEncode_RoundtripString()
-        => Assert.Equal("\"hello\"", Invoke("jsonEncode", S("hello")).AsString());
+        => Assert.Equal("hello", Invoke("jsonEncode", S("hello")).AsString());
 
     [Fact]
     public void JsonEncode_RoundtripInteger()
@@ -929,7 +929,7 @@ public class StringVerbExtendedTests
 
     [Fact]
     public void JsonEncode_RoundtripNull()
-        => Assert.Equal("null", Invoke("jsonEncode", Null()).AsString());
+        => Assert.True(Invoke("jsonEncode", Null()).IsNull);
 
     [Fact]
     public void JsonEncode_RoundtripArray()
@@ -946,7 +946,7 @@ public class StringVerbExtendedTests
 
     [Fact]
     public void JsonDecode_String()
-        => Assert.Equal("hello", Invoke("jsonDecode", S("\"hello\"")).AsString());
+        => Assert.Equal("hello", Invoke("jsonDecode", S("hello")).AsString());
 
     [Fact]
     public void JsonDecode_NullInput()

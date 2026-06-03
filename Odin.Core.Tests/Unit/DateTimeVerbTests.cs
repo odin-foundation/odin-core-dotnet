@@ -159,7 +159,7 @@ public class DateTimeVerbTests
     [Fact]
     public void ParseTimestamp_IsoFormat()
     {
-        var result = Invoke("parseTimestamp", S("2024-03-15T14:30:00Z"));
+        var result = Invoke("parseTimestamp", S("2024-03-15 14:30:00"), S("YYYY-MM-DD HH:mm:ss"));
         var s = result.AsString();
         Assert.NotNull(s);
         Assert.Contains("2024-03-15", s!);
@@ -469,8 +469,8 @@ public class DateTimeVerbTests
     [Fact]
     public void DayOfWeek_Sunday()
     {
-        // 2024-01-07 is Sunday
-        Assert.Equal(0, Invoke("dayOfWeek", D("2024-01-07")).AsInt64()); // Sunday = 0
+        // 2024-01-07 is Sunday (ISO weekday 7)
+        Assert.Equal(7, Invoke("dayOfWeek", D("2024-01-07")).AsInt64());
     }
 
     [Fact]
@@ -719,9 +719,9 @@ public class DateTimeVerbTests
     }
 
     [Fact]
-    public void DaysBetweenDates_ReversedIsAbsolute()
+    public void DaysBetweenDates_ReversedIsSigned()
     {
-        Assert.Equal(10, Invoke("daysBetweenDates", D("2024-01-11"), D("2024-01-01")).AsInt64());
+        Assert.Equal(-10, Invoke("daysBetweenDates", D("2024-01-11"), D("2024-01-01")).AsInt64());
     }
 
     [Fact]
