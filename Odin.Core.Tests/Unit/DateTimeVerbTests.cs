@@ -247,6 +247,28 @@ public class DateTimeVerbTests
         Assert.True(Invoke("addMonths", Null(), I(1)).IsNull);
     }
 
+    [Fact]
+    public void AddMonths_ClampsToLeapFebEnd()
+    {
+        // Jan 31 + 1 month clamps to Feb 29 in a leap year.
+        var result = Invoke("addMonths", D("2024-01-31"), I(1));
+        Assert.Equal("2024-02-29", result.AsString());
+    }
+
+    [Fact]
+    public void AddMonths_ClampsToNonLeapFebEnd()
+    {
+        // Jan 31 + 1 month clamps to Feb 28 outside a leap year.
+        var result = Invoke("addMonths", D("2023-01-31"), I(1));
+        Assert.Equal("2023-02-28", result.AsString());
+    }
+
+    [Fact]
+    public void AddMonths_NonDateIsNull()
+    {
+        Assert.True(Invoke("addMonths", S("nope"), I(2)).IsNull);
+    }
+
     // =========================================================================
     // addYears
     // =========================================================================
@@ -269,6 +291,14 @@ public class DateTimeVerbTests
     public void AddYears_NullDate()
     {
         Assert.True(Invoke("addYears", Null(), I(1)).IsNull);
+    }
+
+    [Fact]
+    public void AddYears_ClampsFeb29ToNonLeapFebEnd()
+    {
+        // Feb 29 + 1 year clamps to Feb 28 when the target year is not a leap year.
+        var result = Invoke("addYears", D("2024-02-29"), I(1));
+        Assert.Equal("2025-02-28", result.AsString());
     }
 
     // =========================================================================
