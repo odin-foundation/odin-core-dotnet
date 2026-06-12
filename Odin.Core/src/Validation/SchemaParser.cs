@@ -53,6 +53,7 @@ namespace Odin.Core.Validation
             private string _currentTypeName = "";
             private List<string> _currentTypeParents = new List<string>();
             private List<SchemaField> _currentTypeFields = new List<SchemaField>();
+            private Dictionary<string, SchemaArray> _currentTypeArrays = new Dictionary<string, SchemaArray>();
             private string _currentSectionPath = "";
             private int? _currentArrayMin;
             private int? _currentArrayMax;
@@ -167,6 +168,8 @@ namespace Odin.Core.Validation
                     {
                         foreach (var f in fields)
                             existing.SchemaFields.Add(f);
+                        foreach (var kvp in _currentTypeArrays)
+                            existing.Arrays[kvp.Key] = kvp.Value;
                     }
                     else
                     {
@@ -174,12 +177,14 @@ namespace Odin.Core.Validation
                         {
                             Name = name,
                             SchemaFields = new List<SchemaField>(fields),
+                            Arrays = new Dictionary<string, SchemaArray>(_currentTypeArrays),
                             Parents = new List<string>(_currentTypeParents),
                         };
                     }
 
                     _currentTypeName = "";
                     _currentTypeFields = new List<SchemaField>();
+                    _currentTypeArrays = new Dictionary<string, SchemaArray>();
                     _currentTypeParents = new List<string>();
                 }
 
@@ -200,6 +205,52 @@ namespace Odin.Core.Validation
                 }
 
                 _currentContext = ParserContext.None;
+            }
+
+            // Route an array-of-object entry (arr[] = @type or arr[].field) into the
+            // current type's arrays builder. Returns false for non-array keys and for
+            // scalar arrays (arr[] = #), which keep their flat-field handling.
+            private bool TryAddTypeArrayEntry(string key, string value)
+            {
+                int inlineIdx = key.IndexOf("[].", StringComparison.Ordinal);
+                if (inlineIdx >= 0)
+                {
+                    var arrName = key.Substring(0, inlineIdx).Trim();
+                    var itemPath = key.Substring(inlineIdx + 3).Trim();
+                    if (arrName.Length == 0 || itemPath.Length == 0) return false;
+                    var arr = GetOrCreateTypeArray(arrName);
+                    arr.ItemFields[itemPath] = ParseFieldDef(itemPath, value);
+                    return true;
+                }
+
+                if (key.EndsWith("[]", StringComparison.Ordinal))
+                {
+                    var refVal = value.Trim();
+                    int semi = FindUnquotedSemicolon(refVal);
+                    if (semi >= 0) refVal = refVal.Substring(0, semi).Trim();
+                    if (refVal.Length == 0 || refVal[0] != '@') return false; // scalar array
+                    var arrName = key.Substring(0, key.Length - 2).Trim();
+                    if (arrName.Length == 0) return false;
+                    int spaceIdx = refVal.IndexOf(' ');
+                    var typeRef = (spaceIdx >= 0 ? refVal.Substring(0, spaceIdx) : refVal).Substring(1);
+                    var arr = GetOrCreateTypeArray(arrName);
+                    arr.ItemTypeRef = typeRef;
+                    return true;
+                }
+
+                return false;
+            }
+
+            private SchemaArray GetOrCreateTypeArray(string arrName)
+            {
+                if (_currentTypeSubPath.Length > 0)
+                    arrName = _currentTypeSubPath + "." + arrName;
+                if (!_currentTypeArrays.TryGetValue(arrName, out var arr))
+                {
+                    arr = new SchemaArray { Name = arrName };
+                    _currentTypeArrays[arrName] = arr;
+                }
+                return arr;
             }
 
             private void ParseImport(string line)
@@ -500,9 +551,11 @@ namespace Odin.Core.Validation
 
                     case ParserContext.TypeDef:
                     {
+                        // Array-of-object entry fields (arr[] = @type or arr[].field) live in
+                        // the type's arrays map so they get per-element validation.
+                        if (TryAddTypeArrayEntry(key, value))
+                            break;
                         var fieldName = key;
-                        if (fieldName.EndsWith("[]", StringComparison.Ordinal))
-                            fieldName = fieldName.Substring(0, fieldName.Length - 2).Trim();
                         // Inside a relative sub-section ({.term}), prefix the field name.
                         if (_currentTypeSubPath.Length > 0)
                             fieldName = _currentTypeSubPath + "." + fieldName;

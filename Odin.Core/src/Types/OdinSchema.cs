@@ -62,6 +62,13 @@ public sealed class SchemaType
     /// <summary>Fields defined in this type.</summary>
     public List<SchemaField> SchemaFields { get; set; } = new();
 
+    /// <summary>
+    /// Array-of-object entry fields declared inside the type, keyed by array name
+    /// (e.g. "producers" for producers[] = @t or producers[].field). Enables
+    /// per-element validation when the type is reached through a reference.
+    /// </summary>
+    public Dictionary<string, SchemaArray> Arrays { get; set; } = new();
+
     /// <summary>Parent types for composition.</summary>
     public List<string> Parents { get; set; } = new();
 }
@@ -494,6 +501,15 @@ public sealed class SchemaArray
 
     /// <summary>Tabular column names declared in the array header ({path[] : a, b}).</summary>
     public List<string> Columns { get; set; } = new();
+
+    /// <summary>Entry fields for an array of objects, keyed by field name.</summary>
+    public Dictionary<string, SchemaField> ItemFields { get; set; } = new();
+
+    /// <summary>
+    /// For an arr[] = @type declaration the entry fields come from a referenced
+    /// type, resolved at validation time. Empty ItemFields plus this ref.
+    /// </summary>
+    public string? ItemTypeRef { get; set; }
 }
 
 /// <summary>An object-level constraint.</summary>

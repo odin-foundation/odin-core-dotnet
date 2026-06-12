@@ -79,12 +79,14 @@ namespace Odin.Core.Transform
                 else
                 {
                     // Object section: single root element with namespace declarations
+                    SplitAttrChildren(child, modifiers, key, out var attrFields, out var childFields);
                     sb.Append('<').Append(key);
                     if (needsNamespace)
                         sb.Append(" xmlns:odin=\"https://odin.foundation/ns\"");
                     sb.Append(nsDecls);
+                    AppendAttrFields(sb, attrFields);
                     sb.Append(">\n");
-                    WriteObjectChildren(sb, child, indent, 1, modifiers, key, emitTypeHints);
+                    WriteChildEntries(sb, childFields, indent, 1, modifiers, key, emitTypeHints);
                     sb.Append("</").Append(key).Append(">\n");
                 }
             }
@@ -110,33 +112,13 @@ namespace Odin.Core.Transform
                 var entries = item.AsObject();
                 if (entries == null) return;
 
-                // Collect :attr fields
-                var attrFields = new List<KeyValuePair<string, DynValue>>();
-                var childFields = new List<KeyValuePair<string, DynValue>>();
-
-                for (int i = 0; i < entries.Count; i++)
-                {
-                    string modKey = pathPrefix + "." + entries[i].Key;
-                    if (modifiers.TryGetValue(modKey, out var mods) && mods.Attr)
-                        attrFields.Add(entries[i]);
-                    else
-                        childFields.Add(entries[i]);
-                }
+                SplitAttrChildren(item, modifiers, pathPrefix, out var attrFields, out var childFields);
 
                 sb.Append(pad).Append('<').Append(tag);
-                for (int i = 0; i < attrFields.Count; i++)
-                {
-                    sb.Append(' ').Append(attrFields[i].Key).Append("=\"");
-                    sb.Append(XmlEscape(ScalarToString(attrFields[i].Value)));
-                    sb.Append('"');
-                }
+                AppendAttrFields(sb, attrFields);
                 sb.Append(">\n");
 
-                for (int i = 0; i < childFields.Count; i++)
-                {
-                    WriteElement(sb, childFields[i].Key, childFields[i].Value, indent, depth + 1,
-                        modifiers, pathPrefix + "." + childFields[i].Key, true, emitTypeHints);
-                }
+                WriteChildEntries(sb, childFields, indent, depth + 1, modifiers, pathPrefix, emitTypeHints);
 
                 sb.Append(pad).Append("</").Append(tag).Append(">\n");
             }
@@ -146,16 +128,48 @@ namespace Odin.Core.Transform
             }
         }
 
-        private static void WriteObjectChildren(StringBuilder sb, DynValue value, int indent, int depth,
-            Dictionary<string, OdinModifiers> modifiers, string pathPrefix, bool emitTypeHints)
+        // Split an object's entries into :attr fields (rendered as attributes on the
+        // parent element) and regular child fields (rendered as nested elements).
+        private static void SplitAttrChildren(DynValue value,
+            Dictionary<string, OdinModifiers> modifiers, string pathPrefix,
+            out List<KeyValuePair<string, DynValue>> attrFields,
+            out List<KeyValuePair<string, DynValue>> childFields)
         {
+            attrFields = new List<KeyValuePair<string, DynValue>>();
+            childFields = new List<KeyValuePair<string, DynValue>>();
             var entries = value.AsObject();
             if (entries == null) return;
 
             for (int i = 0; i < entries.Count; i++)
             {
-                string childPath = pathPrefix + "." + entries[i].Key;
-                WriteElement(sb, entries[i].Key, entries[i].Value, indent, depth, modifiers, childPath, true, emitTypeHints);
+                string modKey = pathPrefix + "." + entries[i].Key;
+                if (modifiers.TryGetValue(modKey, out var mods) && mods.Attr
+                    && entries[i].Value.Type != DynValueType.Object
+                    && entries[i].Value.Type != DynValueType.Array)
+                    attrFields.Add(entries[i]);
+                else
+                    childFields.Add(entries[i]);
+            }
+        }
+
+        private static void AppendAttrFields(StringBuilder sb, List<KeyValuePair<string, DynValue>> attrFields)
+        {
+            for (int i = 0; i < attrFields.Count; i++)
+            {
+                sb.Append(' ').Append(attrFields[i].Key).Append("=\"");
+                sb.Append(XmlEscape(ScalarToString(attrFields[i].Value)));
+                sb.Append('"');
+            }
+        }
+
+        private static void WriteChildEntries(StringBuilder sb,
+            List<KeyValuePair<string, DynValue>> childFields, int indent, int depth,
+            Dictionary<string, OdinModifiers> modifiers, string pathPrefix, bool emitTypeHints)
+        {
+            for (int i = 0; i < childFields.Count; i++)
+            {
+                string childPath = pathPrefix + "." + childFields[i].Key;
+                WriteElement(sb, childFields[i].Key, childFields[i].Value, indent, depth, modifiers, childPath, true, emitTypeHints);
             }
         }
 
@@ -189,8 +203,11 @@ namespace Odin.Core.Transform
 
                 case DynValueType.Object:
                 {
-                    sb.Append(pad).Append('<').Append(qtag).Append(">\n");
-                    WriteObjectChildren(sb, value, indent, depth + 1, modifiers, modKey, emitTypeHints);
+                    SplitAttrChildren(value, modifiers, modKey, out var attrFields, out var childFields);
+                    sb.Append(pad).Append('<').Append(qtag);
+                    AppendAttrFields(sb, attrFields);
+                    sb.Append(">\n");
+                    WriteChildEntries(sb, childFields, indent, depth + 1, modifiers, modKey, emitTypeHints);
                     sb.Append(pad).Append("</").Append(qtag).Append(">\n");
                     break;
                 }

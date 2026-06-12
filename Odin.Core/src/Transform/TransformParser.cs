@@ -1157,10 +1157,12 @@ namespace Odin.Core.Transform
                     // Skip whitespace before potential directives
                     while (pos < argsStr.Length && char.IsWhiteSpace(argsStr[pos])) pos++;
 
-                    // Collect extraction directives
+                    // Collect extraction directives. Field modifiers (:attr, :required, ...)
+                    // belong to the mapping, not the argument, so stop and let them bubble up.
                     var refDirectives = new List<OdinDirective>();
                     while (pos < argsStr.Length && argsStr[pos] == ':')
                     {
+                        if (IsFieldModifierDirective(argsStr, pos)) break;
                         var (dir, consumed) = ParseExtractionDirective(argsStr.Substring(pos));
                         if (dir != null)
                         {
@@ -1270,6 +1272,22 @@ namespace Odin.Core.Transform
         {
             int end = FindTokenEnd(s, 0);
             return s.Substring(0, end);
+        }
+
+        // Field/value modifiers attach to the mapping, not a verb argument.
+        private static readonly HashSet<string> FieldModifierDirectives = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "attr", "required", "confidential", "deprecated", "redacted", "critical",
+        };
+
+        // True when the directive at s[pos] (a ':') names a field modifier.
+        private static bool IsFieldModifierDirective(string s, int pos)
+        {
+            int nameStart = pos + 1;
+            int nameEnd = nameStart;
+            while (nameEnd < s.Length && !char.IsWhiteSpace(s[nameEnd])) nameEnd++;
+            var name = s.Substring(nameStart, nameEnd - nameStart);
+            return FieldModifierDirectives.Contains(name);
         }
 
         private static (OdinDirective? Dir, int Consumed) ParseExtractionDirective(string s)

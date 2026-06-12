@@ -884,6 +884,7 @@ namespace Odin.Core.Validation
                     Name = kvp.Value.Name,
                     Description = kvp.Value.Description,
                     SchemaFields = new List<SchemaField>(kvp.Value.SchemaFields),
+                    Arrays = new Dictionary<string, SchemaArray>(kvp.Value.Arrays),
                     Parents = new List<string>(kvp.Value.Parents),
                 };
             }
@@ -906,6 +907,9 @@ namespace Odin.Core.Validation
                     {
                         foreach (var field in parentType.SchemaFields)
                             inheritedFields.Add(field);
+                        foreach (var arrKvp in parentType.Arrays)
+                            if (!schemaType.Arrays.ContainsKey(arrKvp.Key))
+                                schemaType.Arrays[arrKvp.Key] = arrKvp.Value;
                     }
                 }
 
@@ -1025,10 +1029,70 @@ namespace Odin.Core.Validation
                         if (!result.ContainsKey(full))
                             result[full] = WithName(f, full);
                     }
+
+                    // Expand the type's array-of-object entries under each present index so
+                    // entry-level required markers are enforced (only when present).
+                    foreach (var arrKvp in td.Arrays)
+                    {
+                        var arrayPath = kvp.Key + "." + arrKvp.Key;
+                        var itemFields = ResolveArrayItemFields(schema, registry, arrKvp.Value);
+                        if (itemFields.Count == 0) continue;
+                        foreach (var idx in PresentArrayIndices(doc, arrayPath))
+                        {
+                            foreach (var itemKvp in itemFields)
+                            {
+                                if (itemKvp.Value.Name == "_composition") continue;
+                                var full = arrayPath + "[" + idx.ToString(CultureInfo.InvariantCulture) + "]." + itemKvp.Key;
+                                if (baseFields.ContainsKey(full)) continue;
+                                result ??= new Dictionary<string, SchemaField>(baseFields);
+                                if (!result.ContainsKey(full))
+                                    result[full] = WithName(itemKvp.Value, full);
+                            }
+                        }
+                    }
                 }
             }
 
             return result ?? baseFields;
+        }
+
+        // Resolve an array's entry fields: the inline item fields, or the fields of the
+        // type named by ItemTypeRef (for the arr[] = @type form).
+        private static Dictionary<string, SchemaField> ResolveArrayItemFields(
+            OdinSchemaDefinition schema,
+            TypeRegistry? registry,
+            SchemaArray arr)
+        {
+            if (arr.ItemFields.Count > 0) return arr.ItemFields;
+            if (arr.ItemTypeRef != null)
+            {
+                var t = LookupType(schema, registry, arr.ItemTypeRef);
+                if (t != null)
+                {
+                    var fields = new Dictionary<string, SchemaField>();
+                    foreach (var f in t.SchemaFields)
+                        fields[f.Name] = f;
+                    return fields;
+                }
+            }
+            return arr.ItemFields;
+        }
+
+        // Distinct array indices present in the document under the given array path.
+        private static List<int> PresentArrayIndices(OdinDocument doc, string arrayPath)
+        {
+            var seen = new SortedSet<int>();
+            var prefix = arrayPath + "[";
+            foreach (var key in doc.Assignments.Keys)
+            {
+                if (!key.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                int close = key.IndexOf(']', prefix.Length);
+                if (close <= prefix.Length) continue;
+                var idxStr = key.Substring(prefix.Length, close - prefix.Length);
+                if (int.TryParse(idxStr, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
+                    seen.Add(idx);
+            }
+            return new List<int>(seen);
         }
 
         private static SchemaField WithName(SchemaField f, string name) => new SchemaField
