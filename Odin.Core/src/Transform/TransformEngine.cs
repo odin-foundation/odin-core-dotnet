@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Odin.Core.Types;
+using Odin.Core.Utils;
 
 namespace Odin.Core.Transform
 {
@@ -78,6 +79,23 @@ namespace Odin.Core.Transform
         }
     }
 
+    /// <summary>
+    /// Execution guard abort (fuel, timeout, or depth). Not downgraded by the
+    /// onError policy; the execute boundary surfaces <see cref="Error"/> as a
+    /// failed result and it never escapes the execute API.
+    /// </summary>
+    internal sealed class TransformAbortException : Exception
+    {
+        /// <summary>The guard error to surface.</summary>
+        public TransformError Error { get; }
+
+        /// <summary>Creates a transform abort exception.</summary>
+        public TransformAbortException(TransformError error) : base(error.Message)
+        {
+            Error = error;
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Execution Context (internal)
     // ─────────────────────────────────────────────────────────────────────────
@@ -132,6 +150,15 @@ namespace Odin.Core.Transform
         /// <summary>Whether strict verb-argument type checking is enabled.</summary>
         public bool StrictTypes;
 
+        // Execution guard state. Fuel/timeout charge only when their cap is > 0.
+        public long FuelCap;
+        public long TimeoutMs;
+        public int MaxExprDepth;
+        public long FuelUsed;
+        public int ExprDepth;
+        public long OpsSinceClock;
+        public long StartTime;
+
         public ExecContext()
         {
             Source = DynValue.Null();
@@ -180,6 +207,101 @@ namespace Odin.Core.Transform
         /// </summary>
         public static Dictionary<string, Func<DynValue[], VerbContext, DynValue>> VerbRegistry { get; set; }
             = new Dictionary<string, Func<DynValue[], VerbContext, DynValue>>();
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Execution guard
+        // ─────────────────────────────────────────────────────────────────────
+
+        // Monotonic wall clock in milliseconds. Overridable so timeout enforcement is testable.
+        private static readonly System.Diagnostics.Stopwatch GuardStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        internal static Func<long> Clock { get; set; } = () => GuardStopwatch.ElapsedMilliseconds;
+
+        // Read the wall clock once per this many charged units.
+        private const int ClockCheckInterval = 1024;
+
+        // Verb whose cost is O(n log n) over an array argument.
+        private static readonly HashSet<string> SortVerbs = new HashSet<string> { "sort" };
+
+        // Verbs whose cost grows linearly with an array argument.
+        private static readonly HashSet<string> WidthVerbs = new HashSet<string>
+        {
+            "distinct", "groupBy", "keyBy", "countBy", "reduce",
+            "sum", "avg", "min", "max", "count", "sumIf", "avgIf", "countIf",
+            "union", "intersection", "difference", "symmetricDifference",
+            "map", "filter", "window", "explode", "flatten", "reverse",
+        };
+
+        // Width of the first array-typed argument, or 0 if none.
+        private static int FirstArrayWidth(DynValue[] args)
+        {
+            foreach (var arg in args)
+                if (arg.Type == DynValueType.Array)
+                    return arg.AsArray()?.Count ?? 0;
+            return 0;
+        }
+
+        // Enter expression evaluation: enforce depth, charge one base unit.
+        // Callers must pair this with ExitEval in a finally block.
+        private static void EnterEval(ExecContext ctx)
+        {
+            if (++ctx.ExprDepth > ctx.MaxExprDepth)
+            {
+                ctx.ExprDepth--;
+                throw new TransformAbortException(new TransformError
+                {
+                    Code = TransformErrorCode.ExpressionDepthExceeded.Code(),
+                    Message = $"Expression evaluation depth exceeded (limit {ctx.MaxExprDepth})",
+                });
+            }
+            Charge(ctx, 1);
+        }
+
+        // Leave expression evaluation.
+        private static void ExitEval(ExecContext ctx) => ctx.ExprDepth--;
+
+        // Charge fuel and, at a coarse interval, the wall clock. Both are no-ops
+        // unless their cap is set (> 0), so unbounded transforms pay nothing.
+        private static void Charge(ExecContext ctx, long units)
+        {
+            if (ctx.FuelCap > 0)
+            {
+                ctx.FuelUsed += units;
+                if (ctx.FuelUsed > ctx.FuelCap)
+                    throw new TransformAbortException(new TransformError
+                    {
+                        Code = TransformErrorCode.TransformBudgetExceeded.Code(),
+                        Message = $"Transform fuel budget exceeded (limit {ctx.FuelCap})",
+                    });
+            }
+            if (ctx.TimeoutMs > 0)
+            {
+                ctx.OpsSinceClock += units;
+                if (ctx.OpsSinceClock >= ClockCheckInterval)
+                {
+                    ctx.OpsSinceClock = 0;
+                    if (Clock() - ctx.StartTime > ctx.TimeoutMs)
+                        throw new TransformAbortException(new TransformError
+                        {
+                            Code = TransformErrorCode.TransformTimeoutExceeded.Code(),
+                            Message = $"Transform timeout exceeded (limit {ctx.TimeoutMs}ms)",
+                        });
+                }
+            }
+        }
+
+        // Charge width for a verb doing O(n)/O(n log n) work over an array argument,
+        // so large-array work cannot escape the budget at a flat unit. Runs whenever
+        // fuel or timeout is set.
+        private static void ChargeVerbWidth(ExecContext ctx, string verb, DynValue[] args)
+        {
+            if (ctx.FuelCap <= 0 && ctx.TimeoutMs <= 0) return;
+            int n = FirstArrayWidth(args);
+            if (n <= 0) return;
+            if (SortVerbs.Contains(verb))
+                Charge(ctx, (long)n * (long)Math.Ceiling(Math.Log(Math.Max(n, 2), 2)));
+            else if (WidthVerbs.Contains(verb))
+                Charge(ctx, n);
+        }
 
         // ─────────────────────────────────────────────────────────────────────
         // Public entry points
@@ -378,30 +500,37 @@ namespace Odin.Core.Transform
             int? currentPass = null;
             // Conditional chain state: "none" (no chain), "pending" (chain open, no branch taken), "taken".
             string branch = "none";
-            foreach (var seg in ordered)
+            try
             {
-                // Reset non-persist accumulators at pass transitions
-                int? segPass = seg.Pass;
-                if (!Equals(segPass, currentPass))
+                foreach (var seg in ordered)
                 {
-                    if (!isFirstPass)
+                    // Reset non-persist accumulators at pass transitions
+                    int? segPass = seg.Pass;
+                    if (!Equals(segPass, currentPass))
                     {
-                        foreach (var kvp in transform.Accumulators)
+                        if (!isFirstPass)
                         {
-                            if (!kvp.Value.Persist)
+                            foreach (var kvp in transform.Accumulators)
                             {
-                                ctx.Accumulators[kvp.Key] = OdinValueToDyn(kvp.Value.Initial);
+                                if (!kvp.Value.Persist)
+                                {
+                                    ctx.Accumulators[kvp.Key] = OdinValueToDyn(kvp.Value.Initial);
+                                }
                             }
                         }
+                        isFirstPass = false;
+                        currentPass = segPass;
+                        // Chains do not span pass boundaries.
+                        branch = "none";
                     }
-                    isFirstPass = false;
-                    currentPass = segPass;
-                    // Chains do not span pass boundaries.
-                    branch = "none";
-                }
 
-                ProcessChainSegment(seg, ctx, ref output, ref branch);
-                ctx.GlobalOutput = output;
+                    ProcessChainSegment(seg, ctx, ref output, ref branch);
+                    ctx.GlobalOutput = output;
+                }
+            }
+            catch (TransformAbortException abort)
+            {
+                return AbortResult(ctx, abort, output);
             }
 
             // 4. Apply confidential enforcement
@@ -417,6 +546,21 @@ namespace Odin.Core.Transform
                 Success = ctx.Errors.Count == 0,
                 Output = output,
                 Formatted = formatted,
+                Errors = ctx.Errors,
+                Warnings = ctx.Warnings,
+                OutputModifiers = ctx.FieldModifiers,
+            };
+        }
+
+        // Surface a guard abort as a failed result; the abort never escapes execute.
+        private static TransformResult AbortResult(ExecContext ctx, TransformAbortException abort, DynValue output)
+        {
+            ctx.Errors.Add(abort.Error);
+            return new TransformResult
+            {
+                Success = false,
+                Output = output,
+                Formatted = "",
                 Errors = ctx.Errors,
                 Warnings = ctx.Warnings,
                 OutputModifiers = ctx.FieldModifiers,
@@ -562,56 +706,63 @@ namespace Odin.Core.Transform
 
             // Process each record
             var lines = rawInput.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var line in lines)
+            try
             {
-                if (line.Trim().Length == 0) continue;
-
-                var discValue = ExtractDiscriminatorValue(line, mode, pos, len, fieldIndex, delimiter);
-                if (!segmentMap.TryGetValue(discValue, out var segment)) continue;
-
-                var recordSource = ParseRecord(line, sourceFormat, delimiter);
-                var recordOutput = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
-
-                foreach (var item in segment.Items)
+                foreach (var line in lines)
                 {
-                    var m = item.AsMapping();
-                    if (m != null)
+                    if (line.Trim().Length == 0) continue;
+
+                    var discValue = ExtractDiscriminatorValue(line, mode, pos, len, fieldIndex, delimiter);
+                    if (!segmentMap.TryGetValue(discValue, out var segment)) continue;
+
+                    var recordSource = ParseRecord(line, sourceFormat, delimiter);
+                    var recordOutput = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
+
+                    foreach (var item in segment.Items)
                     {
-                        if (m.Target == "_type") continue;
-                        ProcessMapping(m, ctx, recordSource, ref recordOutput, "");
-                    }
-                    var child = item.AsChild();
-                    if (child != null)
-                    {
-                        foreach (var cm in child.Mappings)
+                        var m = item.AsMapping();
+                        if (m != null)
                         {
-                            var fullTarget = child.Name + "." + cm.Target;
-                            var wrapper = new FieldMapping
+                            if (m.Target == "_type") continue;
+                            ProcessMapping(m, ctx, recordSource, ref recordOutput, "");
+                        }
+                        var child = item.AsChild();
+                        if (child != null)
+                        {
+                            foreach (var cm in child.Mappings)
                             {
-                                Target = fullTarget,
-                                Expression = cm.Expression,
-                                Directives = cm.Directives,
-                                Modifiers = cm.Modifiers,
-                            };
-                            ProcessMapping(wrapper, ctx, recordSource, ref recordOutput, "");
+                                var fullTarget = child.Name + "." + cm.Target;
+                                var wrapper = new FieldMapping
+                                {
+                                    Target = fullTarget,
+                                    Expression = cm.Expression,
+                                    Directives = cm.Directives,
+                                    Modifiers = cm.Modifiers,
+                                };
+                                ProcessMapping(wrapper, ctx, recordSource, ref recordOutput, "");
+                            }
                         }
                     }
-                }
 
-                // Merge into output
-                var segName = segment.Name.EndsWith("[]", StringComparison.Ordinal)
-                    ? segment.Name.Substring(0, segment.Name.Length - 2)
-                    : segment.Name;
+                    // Merge into output
+                    var segName = segment.Name.EndsWith("[]", StringComparison.Ordinal)
+                        ? segment.Name.Substring(0, segment.Name.Length - 2)
+                        : segment.Name;
 
-                if (segment.Name.EndsWith("[]", StringComparison.Ordinal))
-                {
-                    if (arrayAccumulators.TryGetValue(segName, out var accList))
-                        accList.Add(recordOutput);
+                    if (segment.Name.EndsWith("[]", StringComparison.Ordinal))
+                    {
+                        if (arrayAccumulators.TryGetValue(segName, out var accList))
+                            accList.Add(recordOutput);
+                    }
+                    else
+                    {
+                        MergeRecordIntoOutput(ref output, segName, recordOutput);
+                    }
                 }
-                else
-                {
-                    MergeRecordIntoOutput(ref output, segName, recordOutput);
-                }
+            }
+            catch (TransformAbortException abort)
+            {
+                return AbortResult(ctx, abort, output);
             }
 
             // Merge array accumulators into output in segment order
@@ -747,6 +898,10 @@ namespace Odin.Core.Transform
                 SourceFormat = sourceFormat,
                 Target = transform.Target,
                 StrictTypes = transform.StrictTypes,
+                FuelCap = SecurityLimits.MaxTransformFuel,
+                TimeoutMs = SecurityLimits.TransformTimeoutMs,
+                MaxExprDepth = SecurityLimits.MaxExpressionDepth,
+                StartTime = SecurityLimits.TransformTimeoutMs > 0 ? Clock() : 0,
             };
         }
 
@@ -1001,6 +1156,10 @@ namespace Odin.Core.Transform
                                     if (isValueOnly)
                                         itemOutput = val;
                                     // else: side effect only (e.g., accumulator updates)
+                                }
+                                catch (TransformAbortException)
+                                {
+                                    throw;
                                 }
                                 catch (Exception e)
                                 {
@@ -1276,6 +1435,11 @@ namespace Odin.Core.Transform
                         ctx.FieldModifiers[fullKey] = mapping.Modifiers;
                     }
                 }
+            }
+            catch (TransformAbortException)
+            {
+                // Guard aborts are never downgraded by onError.
+                throw;
             }
             catch (Exception e)
             {
@@ -1617,7 +1781,22 @@ namespace Odin.Core.Transform
         // Expression evaluation
         // ─────────────────────────────────────────────────────────────────────
 
+        // Guard boundary: enforce depth, charge base fuel, batch the wall-clock
+        // check, then delegate to the evaluator.
         private static DynValue EvaluateExpression(FieldExpression expr, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
+        {
+            EnterEval(ctx);
+            try
+            {
+                return EvaluateExpressionInner(expr, ctx, currentSource, currentOutput);
+            }
+            finally
+            {
+                ExitEval(ctx);
+            }
+        }
+
+        private static DynValue EvaluateExpressionInner(FieldExpression expr, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
         {
             switch (expr)
             {
@@ -1792,7 +1971,22 @@ namespace Odin.Core.Transform
         // Verb execution
         // ─────────────────────────────────────────────────────────────────────
 
+        // Guard boundary for verb nodes: nested verb chains recurse here, so depth
+        // and base fuel are enforced at this single point too.
         private static DynValue ExecuteVerbCall(VerbCall call, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
+        {
+            EnterEval(ctx);
+            try
+            {
+                return ExecuteVerbCallInner(call, ctx, currentSource, currentOutput);
+            }
+            finally
+            {
+                ExitEval(ctx);
+            }
+        }
+
+        private static DynValue ExecuteVerbCallInner(VerbCall call, ExecContext ctx, DynValue currentSource, DynValue currentOutput)
         {
             // Short-circuit: ifElse
             if (call.Verb == "ifElse" && call.Args.Count >= 3)
@@ -1832,6 +2026,9 @@ namespace Odin.Core.Transform
             var evaluatedArgs = new DynValue[call.Args.Count];
             for (int i = 0; i < call.Args.Count; i++)
                 evaluatedArgs[i] = EvaluateVerbArg(call.Args[i], ctx, currentSource, currentOutput);
+
+            // Charge array-verb width once the arguments are known.
+            ChargeVerbWidth(ctx, call.Verb, evaluatedArgs);
 
             // T002: strict argument type checking.
             if (ctx.StrictTypes && !call.IsCustom)

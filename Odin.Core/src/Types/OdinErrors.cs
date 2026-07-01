@@ -77,7 +77,7 @@ public enum ValidationErrorCode
     SchemaDefinitionError,
 }
 
-/// <summary>Transform error codes (T001-T011). API contract — identical across all SDKs.</summary>
+/// <summary>Transform error codes (T001-T018). API contract — identical across all SDKs.</summary>
 public enum TransformErrorCode
 {
     /// <summary>T001: Unknown verb — the specified verb does not exist.</summary>
@@ -106,6 +106,12 @@ public enum TransformErrorCode
     DanglingBranch,
     /// <summary>T013: Validation failed — field value failed a :validate / :enum / :range constraint.</summary>
     ValidationFailed,
+    /// <summary>T016: Transform fuel budget exceeded.</summary>
+    TransformBudgetExceeded,
+    /// <summary>T017: Transform wall-clock timeout exceeded.</summary>
+    TransformTimeoutExceeded,
+    /// <summary>T018: Expression evaluation depth exceeded.</summary>
+    ExpressionDepthExceeded,
 }
 
 /// <summary>Extension methods for error codes.</summary>
@@ -259,6 +265,9 @@ public static class ErrorCodeExtensions
         TransformErrorCode.IncompatibleConversion => "T011",
         TransformErrorCode.DanglingBranch => "T012",
         TransformErrorCode.ValidationFailed => "T013",
+        TransformErrorCode.TransformBudgetExceeded => "T016",
+        TransformErrorCode.TransformTimeoutExceeded => "T017",
+        TransformErrorCode.ExpressionDepthExceeded => "T018",
         _ => "T000",
     };
 
@@ -278,6 +287,9 @@ public static class ErrorCodeExtensions
         TransformErrorCode.IncompatibleConversion => "Incompatible conversion",
         TransformErrorCode.DanglingBranch => "Dangling conditional branch",
         TransformErrorCode.ValidationFailed => "Validation failed",
+        TransformErrorCode.TransformBudgetExceeded => "Transform fuel budget exceeded",
+        TransformErrorCode.TransformTimeoutExceeded => "Transform timeout exceeded",
+        TransformErrorCode.ExpressionDepthExceeded => "Expression evaluation depth exceeded",
         _ => "Unknown error",
     };
 
@@ -297,6 +309,9 @@ public static class ErrorCodeExtensions
         "T011" => TransformErrorCode.IncompatibleConversion,
         "T012" => TransformErrorCode.DanglingBranch,
         "T013" => TransformErrorCode.ValidationFailed,
+        "T016" => TransformErrorCode.TransformBudgetExceeded,
+        "T017" => TransformErrorCode.TransformTimeoutExceeded,
+        "T018" => TransformErrorCode.ExpressionDepthExceeded,
         _ => null,
     };
 }

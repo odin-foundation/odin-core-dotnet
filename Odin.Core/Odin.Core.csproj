@@ -8,7 +8,7 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <PackageId>Odin.Core</PackageId>
-    <Version>1.2.1</Version>
+    <Version>1.2.2</Version>
     <Authors>Laird Rixford</Authors>
     <Company>Odin Foundation</Company>
     <Description>ODIN (Open Data Interchange Notation) parser, serializer, validator, and transform engine for .NET. Parse, serialize, validate, diff, patch, and transform ODIN documents with full schema support.</Description>
@@ -34,6 +34,11 @@
   </PropertyGroup>
   <ItemGroup>
     <None Include="..\README.md" Pack="true" PackagePath="" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Odin.Core.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
   <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
     <PackageReference Include="System.IO.Hashing" Version="8.0.0" />

@@ -1,3 +1,6 @@
+using System;
+using System.Globalization;
+
 namespace Odin.Core.Utils;
 
 /// <summary>Security limits for ODIN processing.</summary>
@@ -23,4 +26,22 @@ public static class SecurityLimits
 
     /// <summary>Regex timeout for ReDoS protection.</summary>
     public static readonly System.TimeSpan RegexTimeout = System.TimeSpan.FromSeconds(1);
+
+    /// <summary>Transform fuel budget; 0 = unbounded. Env: ODIN_MAX_TRANSFORM_FUEL.</summary>
+    public static long MaxTransformFuel { get; set; } = EnvLong("ODIN_MAX_TRANSFORM_FUEL", 0);
+
+    /// <summary>Transform wall-clock timeout in ms; 0 = unbounded. Env: ODIN_TRANSFORM_TIMEOUT_MS.</summary>
+    public static long TransformTimeoutMs { get; set; } = EnvLong("ODIN_TRANSFORM_TIMEOUT_MS", 0);
+
+    /// <summary>Maximum expression evaluation depth. Env: ODIN_MAX_EXPRESSION_DEPTH.</summary>
+    public static int MaxExpressionDepth { get; set; } = (int)EnvLong("ODIN_MAX_EXPRESSION_DEPTH", 32);
+
+    // Read a non-negative long from the environment, falling back to the default.
+    private static long EnvLong(string name, long fallback)
+    {
+        var raw = Environment.GetEnvironmentVariable(name);
+        if (raw != null && long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) && v >= 0)
+            return v;
+        return fallback;
+    }
 }
