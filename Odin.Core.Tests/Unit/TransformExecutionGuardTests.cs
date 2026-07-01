@@ -40,10 +40,10 @@ public sealed class TransformExecutionGuardTests : IDisposable
     private static string HeaderWith(string onError) =>
         Header + $"{{$target}}\nformat = \"json\"\nonError = \"{onError}\"\n\n";
 
-    private static TransformResult Run(string body, DynValue source, string head)
+    private static TransformResult Run(string body, DynValue source, string head, TransformOptions? opts = null)
     {
         var transform = Odin.ParseTransform(head + body);
-        return TransformEngine.Execute(transform, source);
+        return TransformEngine.Execute(transform, source, opts);
     }
 
     private static TransformResult Run(string body, DynValue source) => Run(body, source, Header);
@@ -181,5 +181,50 @@ public sealed class TransformExecutionGuardTests : IDisposable
         Assert.False(r.Success);
         Assert.True(HasCode(r.Errors, "T016"));
         Assert.False(HasCode(r.Warnings, "T016"));
+    }
+
+    // ── per-call overrides ────────────────────────────────────────────────
+
+    [Fact]
+    public void PerCallFuelBudgetAbortsWithNoGlobalLimit()
+    {
+        SecurityLimits.MaxTransformFuel = 0;
+        var r = Run("{out}\nr = %sort @big", BigArray(200), Header, new TransformOptions { MaxTransformFuel = 50 });
+        Assert.False(r.Success);
+        Assert.True(HasCode(r.Errors, "T016"));
+    }
+
+    [Fact]
+    public void PerCallFuelOverridesGlobalLimit()
+    {
+        SecurityLimits.MaxTransformFuel = 50;
+        var r = Run("{out}\nr = %sort @big", BigArray(200), Header, new TransformOptions { MaxTransformFuel = 1_000_000 });
+        Assert.True(r.Success);
+    }
+
+    [Fact]
+    public void PerCallZeroOptsOutOfGlobalFuelCap()
+    {
+        SecurityLimits.MaxTransformFuel = 50;
+        var r = Run("{out}\nr = %sort @big", BigArray(200), Header, new TransformOptions { MaxTransformFuel = 0 });
+        Assert.True(r.Success);
+    }
+
+    [Fact]
+    public void PerCallExpressionDepthCapYieldsDepthError()
+    {
+        var r = Run(NestAbs(30), DynValue.Null(), Header, new TransformOptions { MaxExpressionDepth = 8 });
+        Assert.False(r.Success);
+        Assert.True(HasCode(r.Errors, "T018"));
+    }
+
+    [Fact]
+    public void PerCallTimeoutYieldsTimeoutError()
+    {
+        long clock = 0;
+        TransformEngine.Clock = () => clock += 10_000;
+        var r = Run("{out}\nr = %sort @big", BigArray(300), Header, new TransformOptions { TransformTimeoutMs = 100 });
+        Assert.False(r.Success);
+        Assert.True(HasCode(r.Errors, "T017"));
     }
 }

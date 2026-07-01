@@ -60,6 +60,15 @@ namespace Odin.Core.Transform
         /// before execution. Returning null leaves that import unresolved.
         /// </summary>
         public Func<string, string?>? ImportResolver { get; set; }
+
+        /// <summary>Per-call fuel budget; overrides the global limit. 0 means unbounded.</summary>
+        public long? MaxTransformFuel { get; set; }
+
+        /// <summary>Per-call wall-clock timeout in ms; overrides the global limit. 0 means unbounded.</summary>
+        public long? TransformTimeoutMs { get; set; }
+
+        /// <summary>Per-call expression-depth cap; overrides the global limit.</summary>
+        public long? MaxExpressionDepth { get; set; }
     }
 
     /// <summary>
@@ -488,7 +497,7 @@ namespace Odin.Core.Transform
             }
 
             // 1. Build execution context
-            var ctx = BuildContext(transform, source);
+            var ctx = BuildContext(transform, source, options);
 
             // 2. Build output
             var output = DynValue.Object(new List<KeyValuePair<string, DynValue>>());
@@ -859,7 +868,7 @@ namespace Odin.Core.Transform
             }
         }
 
-        private static ExecContext BuildContext(OdinTransform transform, DynValue source)
+        private static ExecContext BuildContext(OdinTransform transform, DynValue source, TransformOptions? options = null)
         {
             var constants = new Dictionary<string, DynValue>();
             foreach (var kvp in transform.Constants)
@@ -898,10 +907,11 @@ namespace Odin.Core.Transform
                 SourceFormat = sourceFormat,
                 Target = transform.Target,
                 StrictTypes = transform.StrictTypes,
-                FuelCap = SecurityLimits.MaxTransformFuel,
-                TimeoutMs = SecurityLimits.TransformTimeoutMs,
-                MaxExprDepth = SecurityLimits.MaxExpressionDepth,
-                StartTime = SecurityLimits.TransformTimeoutMs > 0 ? Clock() : 0,
+                // A per-call option overrides the global limit; unset falls back to it.
+                FuelCap = options?.MaxTransformFuel ?? SecurityLimits.MaxTransformFuel,
+                TimeoutMs = options?.TransformTimeoutMs ?? SecurityLimits.TransformTimeoutMs,
+                MaxExprDepth = (int)(options?.MaxExpressionDepth ?? SecurityLimits.MaxExpressionDepth),
+                StartTime = (options?.TransformTimeoutMs ?? SecurityLimits.TransformTimeoutMs) > 0 ? Clock() : 0,
             };
         }
 
